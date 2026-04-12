@@ -55,6 +55,8 @@ class AutoDBClient:
             resp = await c.post(f"{self.base_url}{path}", headers=self._h, json=body)
             print(f"[AutoDB] POST {path} → {resp.status_code}: {resp.text[:300]}")
             return resp.json()
+    async def run_sandbox(self, conn_id, sql):
+        return await self._post(f"/connections/{conn_id}/migrations/sandbox", {"sql": sql})
 
     async def list_connections(self):
         return await self._get("/connections")
@@ -483,9 +485,13 @@ async def cmd_analyze(client, chan, user_id, sql, db):
         await client.chat_postMessage(channel=chan, text="Usage: `/db analyze <SQL>`")
         return
 
-    msg = await client.chat_postMessage(channel=chan, text="🔄 Running AutoDB risk analysis...")
+    msg = await client.chat_postMessage(channel=chan, text="🔄 Running AutoDB risk analysis & sandbox...")
     try:
-        r = await db.analyze_migration(conn, sql)
+        # Run both in parallel
+        analysis_task = asyncio.create_task(db.analyze_migration(conn, sql))
+        sandbox_task  = asyncio.create_task(db.run_sandbox(conn, sql))
+        r, sandbox_r  = await asyncio.gather(analysis_task, sandbox_task)
+
         if not r.get("success"):
             await client.chat_update(channel=chan, ts=msg["ts"],
                 text=f"❌ Analysis failed: {r.get('error', r)}")
@@ -495,6 +501,12 @@ async def cmd_analyze(client, chan, user_id, sql, db):
         score        = data.get("risk_score", 0)
         token        = data.get("approval_token")
         needs_second = score >= HIGH_RISK_THRESHOLD
+
+        # Inject sandbox result into data so format_risk_card picks it up
+        if sandbox_r.get("success"):
+            data["sandbox_result"] = sandbox_r.get("data")
+        else:
+            print(f"[Sandbox] failed: {sandbox_r}")
 
         if token:
             approvals[token] = {
@@ -515,7 +527,6 @@ async def cmd_analyze(client, chan, user_id, sql, db):
             ))
     except Exception as e:
         await client.chat_update(channel=chan, ts=msg["ts"], text=f"❌ {e}")
-
 
 async def cmd_optimize(client, chan, user_id, sql, db):
     conn = connections.get(user_id, {}).get("default_connection")
