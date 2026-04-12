@@ -1,38 +1,33 @@
 """
 SlackDB Bot - Collaborative Database Operations in Slack
-Powered by AutoDB — with Oracle RAG channel memory
+Powered by AutoDB
 """
+
 from dotenv import load_dotenv
 load_dotenv()
 
 import os
 import json
 import asyncio
-import re
 from datetime import datetime
-from typing import Dict, List, Optional
-
+from typing import Dict, List
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 import httpx
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-SLACK_BOT_TOKEN      = os.environ.get("SLACK_BOT_TOKEN")
-SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET")
-AUTODB_API_KEY       = os.environ.get("AUTODB_API_KEY")
-AUTODB_BASE_URL      = "http://api.autodb.app/api/v1"
-APPROVER_SLACK_ID    = os.environ.get("APPROVER_SLACK_ID", "")
-HIGH_RISK_THRESHOLD  = 50
+SLACK_BOT_TOKEN       = os.environ.get("SLACK_BOT_TOKEN")
+SLACK_SIGNING_SECRET  = os.environ.get("SLACK_SIGNING_SECRET")
+AUTODB_API_KEY        = os.environ.get("AUTODB_API_KEY")
+AUTODB_BASE_URL       = "https://api.autodb.app/api/v1"
 
-# Oracle RAG config
-# ORACLE_CONNECTION_ID: the AutoDB connection where Slack messages get stored
-# Set to your existing connection ID — we'll create a slack_messages table there
-ORACLE_CONNECTION_ID = os.environ.get("ORACLE_CONNECTION_ID", "")
-ANTHROPIC_API_KEY    = os.environ.get("ANTHROPIC_API_KEY", "")
-ORACLE_SCHEMA_READY  = False  # flips True after table is confirmed
+# Slack user ID of whoever must approve high-risk migrations.
+# Set APPROVER_SLACK_ID=U0123456789 in your .env
+# Find it: Slack → click your name → View full profile → Copy Member ID
+APPROVER_SLACK_ID   = os.environ.get("APPROVER_SLACK_ID", "")
+HIGH_RISK_THRESHOLD = 50   # risk score at which a second approval is required
 
 # ── App init ───────────────────────────────────────────────────────────────────
 
@@ -40,10 +35,9 @@ slack_app = AsyncApp(token=SLACK_BOT_TOKEN, signing_secret=SLACK_SIGNING_SECRET)
 api       = FastAPI(title="SlackDB Bot")
 handler   = AsyncSlackRequestHandler(slack_app)
 
-connections: Dict[str, Dict] = {}
-approvals:   Dict[str, Dict] = {}
-audit_log:   List[Dict]      = []
-
+connections: Dict[str, Dict] = {}   # user_id  → {default_connection}
+approvals:   Dict[str, Dict] = {}   # approval_token → approval record
+audit_log:   List[Dict]      = []   # global audit trail
 
 # ── AutoDB client ──────────────────────────────────────────────────────────────
 
@@ -51,7 +45,7 @@ class AutoDBClient:
     def __init__(self, api_key: str):
         self.api_key  = api_key
         self.base_url = AUTODB_BASE_URL
-        self._h       = {"Content-Type": "application/json", "X-API-Key": api_key}
+        self._h = {"Content-Type": "application/json", "X-API-Key": api_key}
 
     async def _get(self, path):
         async with httpx.AsyncClient(timeout=30.0) as c:
@@ -68,7 +62,9 @@ class AutoDBClient:
         return await self._post(f"/connections/{conn_id}/migrations/analyze", {"sql": sql})
 
     async def execute_migration(self, conn_id, sql, token):
-        return await self._post("/migrations/execute", {"connection_id": conn_id, "sql": sql, "approval_token": token})
+        return await self._post("/migrations/execute", {
+            "connection_id": conn_id, "sql": sql, "approval_token": token
+        })
 
     async def get_migration_status(self, request_id):
         return await self._get(f"/migrations/requests/{request_id}")
@@ -79,505 +75,42 @@ class AutoDBClient:
     async def optimize_query(self, conn_id, sql):
         return await self._post(f"/connections/{conn_id}/queries/optimize", {"sql": sql})
 
-    async def execute_sql(self, conn_id, sql, caller="human"):
-        """Direct SQL execution via AutoDB's /execute endpoint"""
-        return await self._post("/execute", {
-            "connection_id": conn_id,
-            "sql": sql,
-            "caller": caller,
-            "guardrail": "strict" if caller == "agent" else "strict",
-            "row_limit": 200
-        })
-
-    async def execute_sql_write(self, conn_id, sql):
-        """Write SQL (INSERT/CREATE) with permissive guardrail"""
-        return await self._post("/execute", {
-            "connection_id": conn_id,
-            "sql": sql,
-            "caller": "human",
-            "row_limit": 1
-        })
-
-    async def text_to_sql(self, conn_id, query):
-        """AutoDB text-to-SQL endpoint"""
-        return await self._post(f"/connections/{conn_id}/queries/generate", {"query": query})
-
-    async def introspect(self, conn_id):
-        """Trigger schema re-introspection"""
-        return await self._post(f"/connections/{conn_id}/introspect", {})
-
-
-# ── Oracle RAG: channel memory system ─────────────────────────────────────────
-
-ORACLE_CREATE_TABLE = """
-CREATE TABLE IF NOT EXISTS slack_messages (
-    id BIGSERIAL PRIMARY KEY,
-    message_ts VARCHAR(30) UNIQUE NOT NULL,
-    thread_ts  VARCHAR(30),
-    channel_id VARCHAR(20) NOT NULL,
-    channel_name VARCHAR(100),
-    user_id    VARCHAR(20) NOT NULL,
-    username   VARCHAR(100),
-    text       TEXT NOT NULL,
-    message_type VARCHAR(20) DEFAULT 'message',
-    has_thread BOOLEAN DEFAULT FALSE,
-    reply_count INT DEFAULT 0,
-    keywords   TEXT,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_slack_messages_channel ON slack_messages(channel_id);
-CREATE INDEX IF NOT EXISTS idx_slack_messages_ts ON slack_messages(message_ts);
-CREATE INDEX IF NOT EXISTS idx_slack_messages_thread ON slack_messages(thread_ts);
-CREATE INDEX IF NOT EXISTS idx_slack_messages_text ON slack_messages USING gin(to_tsvector('english', text));
-"""
-
-
-async def ensure_oracle_schema():
-    """Create the slack_messages table if it doesn't exist."""
-    global ORACLE_SCHEMA_READY
-    if ORACLE_SCHEMA_READY or not ORACLE_CONNECTION_ID:
-        return ORACLE_SCHEMA_READY
-    try:
-        db = AutoDBClient(AUTODB_API_KEY)
-        await db.execute_sql_write(ORACLE_CONNECTION_ID, ORACLE_CREATE_TABLE)
-        # Re-introspect so AutoDB knows about the new table
-        asyncio.create_task(db.introspect(ORACLE_CONNECTION_ID))
-        ORACLE_SCHEMA_READY = True
-        return True
-    except Exception as e:
-        print(f"Oracle schema setup error: {e}")
-        return False
-
-
-def extract_keywords(text: str) -> str:
-    """Extract meaningful keywords from a message for easier searching."""
-    stop = {"the","a","an","is","it","in","on","at","to","for","of","and","or",
-            "but","i","we","you","he","she","they","this","that","was","be","are",
-            "have","has","had","do","did","with","from","by","as","my","your"}
-    words = re.findall(r'\b[a-z]{3,}\b', text.lower())
-    keywords = [w for w in words if w not in stop]
-    # Deduplicate and take top 20
-    seen = set()
-    unique = []
-    for w in keywords:
-        if w not in seen:
-            seen.add(w)
-            unique.append(w)
-    return " ".join(unique[:20])
-
-
-async def store_message(event: dict, client):
-    """Store a Slack message into AutoDB via SQL execute."""
-    if not ORACLE_CONNECTION_ID:
-        return
-    await ensure_oracle_schema()
-    if not ORACLE_SCHEMA_READY:
-        return
-
-    try:
-        text       = event.get("text", "")
-        ts         = event.get("ts", "")
-        thread_ts  = event.get("thread_ts", ts)
-        channel_id = event.get("channel", "")
-        user_id    = event.get("user", "unknown")
-        has_thread = event.get("reply_count", 0) > 0
-        reply_count= event.get("reply_count", 0)
-        keywords   = extract_keywords(text)
-
-        # Get channel name
-        channel_name = channel_id
-        try:
-            info = await client.conversations_info(channel=channel_id)
-            channel_name = info["channel"].get("name", channel_id)
-        except Exception:
-            pass
-
-        # Get username
-        username = user_id
-        try:
-            uinfo = await client.users_info(user=user_id)
-            username = uinfo["user"].get("display_name") or uinfo["user"].get("real_name", user_id)
-        except Exception:
-            pass
-
-        # Escape single quotes
-        safe_text     = text.replace("'", "''")
-        safe_username = username.replace("'", "''")
-        safe_keywords = keywords.replace("'", "''")
-        safe_chan_name = channel_name.replace("'", "''")
-
-        sql = f"""
-INSERT INTO slack_messages
-    (message_ts, thread_ts, channel_id, channel_name, user_id, username, text, has_thread, reply_count, keywords)
-VALUES
-    ('{ts}', '{thread_ts}', '{channel_id}', '{safe_chan_name}', '{user_id}', '{safe_username}',
-     '{safe_text}', {str(has_thread).upper()}, {reply_count}, '{safe_keywords}')
-ON CONFLICT (message_ts) DO UPDATE SET
-    text = EXCLUDED.text,
-    has_thread = EXCLUDED.has_thread,
-    reply_count = EXCLUDED.reply_count,
-    keywords = EXCLUDED.keywords;
-"""
-        db = AutoDBClient(AUTODB_API_KEY)
-        await db.execute_sql_write(ORACLE_CONNECTION_ID, sql.strip())
-
-    except Exception as e:
-        print(f"Oracle store_message error: {e}")
-
-
-async def search_messages(query: str, channel_id: Optional[str] = None, limit: int = 100) -> List[Dict]:
-    """Search stored messages using AutoDB text-to-SQL or direct SQL."""
-    if not ORACLE_CONNECTION_ID or not ORACLE_SCHEMA_READY:
-        return []
-    try:
-        db = AutoDBClient(AUTODB_API_KEY)
-        chan_filter = f"AND channel_id = '{channel_id}'" if channel_id else ""
-
-        # Full-text search using PostgreSQL tsvector
-        safe_query = query.replace("'", "''")
-        sql = f"""
-SELECT message_ts, thread_ts, channel_id, channel_name, username, text, created_at, has_thread, reply_count
-FROM slack_messages
-WHERE to_tsvector('english', text) @@ plainto_tsquery('english', '{safe_query}')
-  {chan_filter}
-ORDER BY created_at DESC
-LIMIT {limit};
-"""
-        result = await db.execute_sql(ORACLE_CONNECTION_ID, sql.strip())
-        if result.get("success") and result.get("data"):
-            cols = result["data"]["columns"]
-            rows = result["data"]["rows"]
-            return [dict(zip(cols, row)) for row in rows]
-        return []
-    except Exception as e:
-        print(f"Oracle search error: {e}")
-        return []
-
-
-async def get_recent_messages(channel_id: str, limit: int = 100) -> List[Dict]:
-    """Fetch the most recent N messages from a channel."""
-    if not ORACLE_CONNECTION_ID or not ORACLE_SCHEMA_READY:
-        return []
-    try:
-        db = AutoDBClient(AUTODB_API_KEY)
-        sql = f"""
-SELECT message_ts, thread_ts, username, text, created_at, has_thread, reply_count
-FROM slack_messages
-WHERE channel_id = '{channel_id}'
-  AND thread_ts = message_ts
-ORDER BY created_at DESC
-LIMIT {limit};
-"""
-        result = await db.execute_sql(ORACLE_CONNECTION_ID, sql.strip())
-        if result.get("success") and result.get("data"):
-            cols = result["data"]["columns"]
-            rows = result["data"]["rows"]
-            msgs = [dict(zip(cols, row)) for row in rows]
-            return list(reversed(msgs))  # chronological order
-        return []
-    except Exception as e:
-        print(f"Oracle get_recent error: {e}")
-        return []
-
-
-async def summarize_with_claude(messages: List[Dict], prompt_context: str) -> str:
-    """Use Claude to summarize a list of messages."""
-    if not ANTHROPIC_API_KEY:
-        # Fallback: simple text summary without Claude
-        if not messages:
-            return "No messages found."
-        lines = [f"• [{m.get('username','?')}]: {m.get('text','')[:120]}" for m in messages[:20]]
-        return f"Last {len(messages)} messages:\n" + "\n".join(lines)
-
-    try:
-        convo = "\n".join([
-            f"[{m.get('created_at','')[:16]}] {m.get('username','unknown')}: {m.get('text','')}"
-            for m in messages
-        ])
-
-        async with httpx.AsyncClient(timeout=60.0) as c:
-            r = await c.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json"
-                },
-                json={
-                    "model": "claude-sonnet-4-20250514",
-                    "max_tokens": 1000,
-                    "messages": [{
-                        "role": "user",
-                        "content": f"{prompt_context}\n\nMessages:\n{convo}"
-                    }]
-                }
-            )
-            data = r.json()
-            return data["content"][0]["text"]
-    except Exception as e:
-        return f"Summary unavailable: {e}"
-
-
-# ── Message event listener (stores every message) ─────────────────────────────
-
-@slack_app.event("message")
-async def handle_message_events(event, client, logger):
-    """Intercept every message and store it in AutoDB."""
-    subtype = event.get("subtype")
-    # Skip bot messages, edits, deletes
-    if subtype in ("bot_message", "message_changed", "message_deleted", "channel_join"):
-        return
-    if event.get("bot_id"):
-        return
-
-    # Store asynchronously so it doesn't slow down the bot
-    asyncio.create_task(store_message(event, client))
-
-
-# ── /catchup command ───────────────────────────────────────────────────────────
-
-@slack_app.command("/catchup")
-async def handle_catchup(ack, command, client):
-    """
-    /catchup              — summarize last 100 messages in this channel
-    /catchup 50           — summarize last 50 messages
-    /catchup billing bug  — semantic search: find messages about billing bug
-    """
-    await ack()
-
-    text       = command.get("text", "").strip()
-    channel_id = command.get("channel_id")
-    user_id    = command.get("user_id")
-
-    if not ORACLE_CONNECTION_ID:
-        await client.chat_postMessage(channel=channel_id,
-            text="⚠️ Oracle not configured. Add `ORACLE_CONNECTION_ID` to your Railway environment variables.")
-        return
-
-    await ensure_oracle_schema()
-
-    loading = await client.chat_postMessage(channel=channel_id, text="🔍 Searching channel memory...")
-
-    # Determine mode: number = recent N, text = semantic search
-    if text.isdigit():
-        limit = min(int(text), 200)
-        messages = await get_recent_messages(channel_id, limit=limit)
-        prompt = f"Summarize these {len(messages)} Slack messages into a concise catchup. Group by topic. Use bullet points. Be specific about decisions made, problems raised, and anything unresolved."
-        mode = f"last {limit} messages"
-    elif text:
-        messages = await search_messages(text, channel_id=channel_id, limit=50)
-        if not messages:
-            # Broaden search without channel filter
-            messages = await search_messages(text, limit=50)
-        prompt = f'The user is searching for messages related to: "{text}". Summarize the most relevant findings. Highlight the thread where the topic was most discussed. Quote specific messages if they\'re important.'
-        mode = f'search: "{text}"'
-    else:
-        messages = await get_recent_messages(channel_id, limit=100)
-        prompt = "Summarize these Slack messages into a concise catchup for someone who was away. Group by topic. Use bullet points. Highlight decisions, blockers, and anything that needs follow-up."
-        mode = "last 100 messages"
-
-    if not messages:
-        await client.chat_update(channel=channel_id, ts=loading["ts"],
-            text=f"📭 No messages found for *{mode}*. The Oracle needs more messages — it only knows about messages sent after the bot was added to the channel.")
-        return
-
-    summary = await summarize_with_claude(messages, prompt)
-
-    blocks = [
-        {
-            "type": "header",
-            "text": {"type": "plain_text", "text": "🔮 Channel Oracle"}
-        },
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*Mode:* {mode} · *Messages analyzed:* {len(messages)}"
-            }
-        },
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": summary[:2800]}
-        },
-        {
-            "type": "context",
-            "elements": [{"type": "mrkdwn",
-                "text": f"Powered by AutoDB + Claude · Try `/catchup billing bug` to search semantically"}]
-        }
-    ]
-
-    await client.chat_update(channel=channel_id, ts=loading["ts"],
-        text="Channel Oracle summary", blocks=blocks)
-
-
-# ── /oracle command (advanced queries) ────────────────────────────────────────
-
-@slack_app.command("/oracle")
-async def handle_oracle(ack, command, client):
-    """
-    /oracle stats         — show channel activity stats
-    /oracle who           — who's most active?
-    /oracle when          — when is this channel most active?
-    /oracle <question>    — ask anything about channel history
-    """
-    await ack()
-
-    text       = command.get("text", "stats").strip().lower()
-    channel_id = command.get("channel_id")
-
-    if not ORACLE_CONNECTION_ID:
-        await client.chat_postMessage(channel=channel_id,
-            text="⚠️ Oracle not configured. Add `ORACLE_CONNECTION_ID` to Railway env vars.")
-        return
-
-    await ensure_oracle_schema()
-    loading = await client.chat_postMessage(channel=channel_id, text="🔮 Consulting the Oracle...")
-
-    try:
-        db = AutoDBClient(AUTODB_API_KEY)
-
-        if text == "stats":
-            sql = f"""
-SELECT
-    COUNT(*) as total_messages,
-    COUNT(DISTINCT user_id) as unique_users,
-    COUNT(DISTINCT DATE(created_at)) as active_days,
-    COUNT(CASE WHEN has_thread THEN 1 END) as threaded_messages,
-    MIN(created_at)::date as first_message,
-    MAX(created_at)::date as last_message
-FROM slack_messages
-WHERE channel_id = '{channel_id}';
-"""
-            result = await db.execute_sql(ORACLE_CONNECTION_ID, sql.strip())
-            if result.get("success") and result["data"]["rows"]:
-                row = dict(zip(result["data"]["columns"], result["data"]["rows"][0]))
-                blocks = [
-                    {"type": "header", "text": {"type": "plain_text", "text": "🔮 Oracle — Channel Stats"}},
-                    {"type": "section", "fields": [
-                        {"type": "mrkdwn", "text": f"*Total messages:*\n{row.get('total_messages',0)}"},
-                        {"type": "mrkdwn", "text": f"*Unique users:*\n{row.get('unique_users',0)}"},
-                        {"type": "mrkdwn", "text": f"*Active days:*\n{row.get('active_days',0)}"},
-                        {"type": "mrkdwn", "text": f"*Threaded convos:*\n{row.get('threaded_messages',0)}"},
-                        {"type": "mrkdwn", "text": f"*First message:*\n{row.get('first_message','?')}"},
-                        {"type": "mrkdwn", "text": f"*Last message:*\n{row.get('last_message','?')}"},
-                    ]}
-                ]
-                await client.chat_update(channel=channel_id, ts=loading["ts"],
-                    text="Oracle stats", blocks=blocks)
-            else:
-                await client.chat_update(channel=channel_id, ts=loading["ts"],
-                    text="📭 No data yet. The Oracle needs messages to analyze.")
-
-        elif text == "who":
-            sql = f"""
-SELECT username, COUNT(*) as message_count
-FROM slack_messages
-WHERE channel_id = '{channel_id}'
-GROUP BY username
-ORDER BY message_count DESC
-LIMIT 10;
-"""
-            result = await db.execute_sql(ORACLE_CONNECTION_ID, sql.strip())
-            if result.get("success") and result["data"]["rows"]:
-                rows = [dict(zip(result["data"]["columns"], r)) for r in result["data"]["rows"]]
-                lines = [f"{i+1}. *{r['username']}* — {r['message_count']} messages" for i, r in enumerate(rows)]
-                await client.chat_update(channel=channel_id, ts=loading["ts"],
-                    text="Oracle: most active users",
-                    blocks=[
-                        {"type": "header", "text": {"type": "plain_text", "text": "🔮 Oracle — Most Active Users"}},
-                        {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}}
-                    ])
-            else:
-                await client.chat_update(channel=channel_id, ts=loading["ts"], text="📭 No data yet.")
-
-        elif text == "when":
-            sql = f"""
-SELECT EXTRACT(HOUR FROM created_at) as hour, COUNT(*) as count
-FROM slack_messages
-WHERE channel_id = '{channel_id}'
-GROUP BY hour
-ORDER BY count DESC
-LIMIT 5;
-"""
-            result = await db.execute_sql(ORACLE_CONNECTION_ID, sql.strip())
-            if result.get("success") and result["data"]["rows"]:
-                rows = [dict(zip(result["data"]["columns"], r)) for r in result["data"]["rows"]]
-                lines = [f"• {int(r['hour']):02d}:00 — {r['count']} messages" for r in rows]
-                await client.chat_update(channel=channel_id, ts=loading["ts"],
-                    text="Oracle: peak hours",
-                    blocks=[
-                        {"type": "header", "text": {"type": "plain_text", "text": "🔮 Oracle — Peak Activity Hours"}},
-                        {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}}
-                    ])
-            else:
-                await client.chat_update(channel=channel_id, ts=loading["ts"], text="📭 No data yet.")
-
-        else:
-            # Use AutoDB text-to-SQL to answer arbitrary questions about channel history
-            natural_query = f"{text} from the slack_messages table for channel {channel_id}"
-            r = await db.text_to_sql(ORACLE_CONNECTION_ID, natural_query)
-            if r.get("success"):
-                gen_sql = r.get("data", {}).get("sql", "")
-                if gen_sql:
-                    exec_r = await db.execute_sql(ORACLE_CONNECTION_ID, gen_sql)
-                    if exec_r.get("success") and exec_r["data"]["rows"]:
-                        cols = exec_r["data"]["columns"]
-                        rows = exec_r["data"]["rows"]
-                        msgs = [dict(zip(cols, row)) for row in rows[:50]]
-                        summary = await summarize_with_claude(msgs,
-                            f'Answer this question about Slack channel history: "{text}". Use the data provided.')
-                        await client.chat_update(channel=channel_id, ts=loading["ts"],
-                            text="Oracle answer",
-                            blocks=[
-                                {"type": "header", "text": {"type": "plain_text", "text": "🔮 Oracle"}},
-                                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Q:* {text}"}},
-                                {"type": "section", "text": {"type": "mrkdwn", "text": summary[:2800]}},
-                                {"type": "context", "elements": [{"type": "mrkdwn",
-                                    "text": f"Generated SQL: `{gen_sql[:100]}...`"}]}
-                            ])
-                        return
-            await client.chat_update(channel=channel_id, ts=loading["ts"],
-                text=f"❌ Couldn't answer: `{text}`. Try `/oracle stats`, `/oracle who`, `/oracle when`, or `/catchup <keywords>`.")
-
-    except Exception as e:
-        await client.chat_update(channel=channel_id, ts=loading["ts"], text=f"❌ Oracle error: {e}")
-
-
 # ── Formatters ─────────────────────────────────────────────────────────────────
 
 RISK_EMOJI = {"low": "🟢", "medium": "🟡", "high": "🟠", "critical": "🔴"}
 
-
 def format_risk_card(data: Dict, needs_second: bool = False) -> List[Dict]:
-    score    = data.get("risk_score", 0)
-    category = data.get("risk_category", "unknown")
-    token    = data.get("approval_token", "none")
-    emoji    = RISK_EMOJI.get(category, "⚪")
-    sandbox  = (data.get("sandbox_result") or {}).get("passed", False)
-    irreversible = (data.get("rollback_plan") or {}).get("has_irreversible", False)
-    affected = data.get("affected_tables", [])
-    sql      = data.get("sql", "")[:120]
+    score      = data.get("risk_score", 0)
+    category   = data.get("risk_category", "unknown")
+    token      = data.get("approval_token", "none")
+    emoji      = RISK_EMOJI.get(category, "⚪")
+    sandbox    = data.get("sandbox_result", {}).get("passed", False)
+    irreversible = data.get("rollback_plan", {}).get("has_irreversible", False)
+    affected   = data.get("affected_tables", [])
+    sql        = data.get("sql", "")[:120]
 
     warning = ""
     if needs_second:
-        who = f"<@{APPROVER_SLACK_ID}>" if APPROVER_SLACK_ID else "a designated approver"
+        who     = f"<@{APPROVER_SLACK_ID}>" if APPROVER_SLACK_ID else "a designated approver"
         warning = f"\n\n⚠️ *High risk — {who} must approve this before it runs.*"
 
     confirm_block = {}
     if score > 30:
         confirm_block = {"confirm": {
-            "title": {"type": "plain_text", "text": "Really run this?"},
-            "text": {"type": "mrkdwn", "text": f"*{category.upper()}* risk migration. {'Cannot be rolled back.' if irreversible else 'Can be rolled back.'} Proceed?"},
+            "title":   {"type": "plain_text", "text": "Really run this?"},
+            "text":    {"type": "mrkdwn",     "text": f"*{category.upper()}* risk migration. "
+                                                       f"{'Cannot be rolled back.' if irreversible else 'Can be rolled back.'} Proceed?"},
             "confirm": {"type": "plain_text", "text": "Yes, run it"},
-            "deny": {"type": "plain_text", "text": "Cancel"}
+            "deny":    {"type": "plain_text", "text": "Cancel"},
         }}
 
     return [
-        {"type": "header", "text": {"type": "plain_text", "text": f"{emoji} Migration Risk: {category.upper()} ({score}/100)"}},
+        {"type": "header", "text": {"type": "plain_text",
+            "text": f"{emoji} Migration Risk: {category.upper()} ({score}/100)"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": (
             f"*SQL:*\n```{sql}```\n"
-            f"*Affected tables:* {', '.join(t['table'] for t in affected) if affected else 'none detected'}\n"
-            f"*Sandbox:* {'✅ Passed' if sandbox else '❌ Failed'}   "
+            f"*Affected tables:* {', '.join(affected) if affected else 'none detected'}\n"
+            f"*Sandbox:* {'✅ Passed' if sandbox else '❌ Failed'}  "
             f"*Rollback:* {'⚠️ Irreversible' if irreversible else '✅ Available'}"
             f"{warning}"
         )}},
@@ -585,31 +118,34 @@ def format_risk_card(data: Dict, needs_second: bool = False) -> List[Dict]:
             {"type": "button", "text": {"type": "plain_text", "text": "✅ Approve & Run"},
              "style": "primary", "value": token, "action_id": "approve_migration", **confirm_block},
             {"type": "button", "text": {"type": "plain_text", "text": "❌ Reject"},
-             "style": "danger", "value": token, "action_id": "reject_migration"},
+             "style": "danger",  "value": token, "action_id": "reject_migration"},
             {"type": "button", "text": {"type": "plain_text", "text": "📋 Full Details"},
              "value": token, "action_id": "view_details"},
         ]},
         {"type": "context", "elements": [{"type": "mrkdwn",
-            "text": f"Risk score {score}/100 · AutoDB · {datetime.now().strftime('%H:%M:%S')}"}]}
+            "text": f"Risk score {score}/100 · AutoDB · {datetime.now().strftime('%H:%M:%S')}"}]},
     ]
-
 
 def format_query_results(result: Dict) -> List[Dict]:
     if not result.get("success"):
         return [{"type": "section", "text": {"type": "mrkdwn",
             "text": f"❌ Query failed:\n```{result.get('error', result)}```"}}]
+
     data   = result.get("data", {})
     output = data.get("markdown_output", str(data))
     sql    = data.get("sql", "")
     conf   = int(data.get("confidence", 0) * 100)
     tables = ", ".join(data.get("referenced_tables", [])) or "n/a"
+
     blocks = []
     if sql:
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Generated SQL:*\n```{sql}```"}})
-    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Results:*\n```{output[:2800]}```"}})
-    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"✨ Confidence: {conf}% · Tables: {tables}"}]})
+        blocks.append({"type": "section", "text": {"type": "mrkdwn",
+            "text": f"*Generated SQL:*\n```{sql}```"}})
+    blocks.append({"type": "section", "text": {"type": "mrkdwn",
+        "text": f"*Results:*\n```{output[:2800]}```"}})
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
+        "text": f"✨ Confidence: {conf}% · Tables: {tables}"}]})
     return blocks
-
 
 def format_audit_log() -> str:
     if not audit_log:
@@ -619,16 +155,100 @@ def format_audit_log() -> str:
         icon = {"approved": "✅", "rejected": "❌", "failed": "💥"}.get(e["status"], "❓")
         lines.append(
             f"{icon} `{e['sql'][:70]}...`\n"
-            f"   {e['status'].upper()} by <@{e['actor']}> · risk: *{e['risk']}* ({e['score']}/100) · {e['time']}"
+            f"  {e['status'].upper()} by <@{e['actor']}> · "
+            f"risk: *{e['risk']}* ({e['score']}/100) · {e['time']}"
         )
     return "\n\n".join(lines)
 
+# ── App Home Tab ───────────────────────────────────────────────────────────────
+# Shows a live personal dashboard to every user who opens the bot's Home tab.
+
+@slack_app.event("app_home_opened")
+async def handle_home_opened(event, client):
+    user_id       = event["user"]
+    conn          = connections.get(user_id, {}).get("default_connection", "_None set_")
+    pending_count = sum(1 for a in approvals.values() if a.get("status") == "pending")
+    total         = len(audit_log)
+    approved_n    = sum(1 for l in audit_log if l.get("status") == "approved")
+    avg_risk      = round(sum(l.get("score", 0) for l in audit_log) / total) if total else 0
+    success_pct   = round(approved_n / total * 100) if total else 0
+
+    recent_blocks = []
+    for entry in reversed(audit_log[-5:]):
+        icon = {"approved": "✅", "rejected": "❌", "failed": "💥"}.get(entry["status"], "❓")
+        recent_blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn",
+                "text": (
+                    f"{icon} `{entry['sql'][:60]}...`\n"
+                    f"_{entry['status'].upper()} · risk {entry['score']}/100 · "
+                    f"by <@{entry['actor']}> · {entry['time']}_"
+                )}
+        })
+
+    if not recent_blocks:
+        recent_blocks.append({"type": "section", "text": {"type": "mrkdwn",
+            "text": "_No migrations yet. Try `/db analyze <SQL>` to get started._"}})
+
+    pending_blocks = []
+    for token, rec in approvals.items():
+        if rec.get("status") == "pending":
+            risk = rec.get("data", {}).get("risk_category", "?")
+            score = rec.get("data", {}).get("risk_score", 0)
+            pending_blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                "text": (
+                    f"⏳ `{rec['sql'][:60]}...`\n"
+                    f"_Risk: {risk} ({score}/100) · by <@{rec['user_id']}>_"
+                )}})
+
+    await client.views_publish(
+        user_id=user_id,
+        view={
+            "type": "home",
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": "🗄️  SlackDB — Your Database Co-Pilot"}},
+                {"type": "section", "text": {"type": "mrkdwn",
+                    "text": "Safe, collaborative database operations for your whole team. "
+                            "Powered by AutoDB risk analysis."}},
+                {"type": "divider"},
+                {"type": "section", "fields": [
+                    {"type": "mrkdwn", "text": f"*Active DB*\n`{conn}`"},
+                    {"type": "mrkdwn", "text": f"*Pending approvals*\n{'⚠️ ' if pending_count else ''}{pending_count}"},
+                    {"type": "mrkdwn", "text": f"*Migrations run*\n{total}"},
+                    {"type": "mrkdwn", "text": f"*Avg risk score*\n{avg_risk}/100"},
+                    {"type": "mrkdwn", "text": f"*Success rate*\n{success_pct}%"},
+                    {"type": "mrkdwn", "text": f"*Approver*\n{'<@'+APPROVER_SLACK_ID+'>' if APPROVER_SLACK_ID else '⚠️ Not configured'}"},
+                ]},
+                {"type": "divider"},
+                *([ {"type": "section", "text": {"type": "mrkdwn", "text": "*⏳ Pending approvals*"}},
+                    *pending_blocks,
+                    {"type": "divider"} ] if pending_blocks else []),
+                {"type": "section", "text": {"type": "mrkdwn", "text": "*Recent migrations*"}},
+                *recent_blocks,
+                {"type": "divider"},
+                {"type": "section", "text": {"type": "mrkdwn",
+                    "text": (
+                        "💡 *Quick commands*\n"
+                        "`/db connect <id>` · connect a database\n"
+                        "`/db query <question>` · ask your DB in plain English\n"
+                        "`/db analyze <SQL>` · risk-check a migration\n"
+                        "`/db optimize <SQL>` · get performance suggestions\n"
+                        "`/db ask <question>` · AI database intelligence\n"
+                        "`/db panic` · emergency rollback\n"
+                        "`/db audit` · full migration history\n"
+                        "`/db status` · health check"
+                    )
+                }},
+            ]
+        }
+    )
 
 # ── /db command router ─────────────────────────────────────────────────────────
 
 @slack_app.command("/db")
 async def handle_db_command(ack, command, client):
     await ack()
+
     text    = command.get("text", "").strip()
     user_id = command.get("user_id")
     chan    = command.get("channel_id")
@@ -636,23 +256,16 @@ async def handle_db_command(ack, command, client):
 
     if not parts:
         await client.chat_postMessage(channel=chan, text=(
-            "*SlackDB* — collaborative database ops + channel memory 🗄️\n\n"
-            "*Database commands:*\n"
+            "*SlackDB* — collaborative database ops for your whole team 🗄️\n\n"
             "• `/db connect <id>` — set your active database\n"
             "• `/db connections` — list available databases\n"
             "• `/db query <question>` — ask your DB in plain English\n"
+            "• `/db ask <question>` — AI database intelligence & diagnostics\n"
             "• `/db analyze <SQL>` — risk-check a migration before running it\n"
             "• `/db optimize <SQL>` — get query performance suggestions\n"
-            "• `/db audit` — migration history\n"
-            "• `/db status` — health check\n\n"
-            "*Oracle commands:*\n"
-            "• `/catchup` — summarize last 100 messages\n"
-            "• `/catchup 50` — summarize last 50 messages\n"
-            "• `/catchup billing bug` — find messages about a topic\n"
-            "• `/oracle stats` — channel activity stats\n"
-            "• `/oracle who` — most active users\n"
-            "• `/oracle when` — peak activity hours\n"
-            "• `/oracle <question>` — ask anything about channel history"
+            "• `/db panic [token]` — emergency rollback\n"
+            "• `/db audit` — see migration history\n"
+            "• `/db status` — health check"
         ))
         return
 
@@ -663,13 +276,15 @@ async def handle_db_command(ack, command, client):
     if   sub == "connect":     await cmd_connect(client, chan, user_id, args)
     elif sub == "connections": await cmd_list_connections(client, chan, db)
     elif sub == "query":       await cmd_query(client, chan, user_id, args, db)
+    elif sub == "ask":         await cmd_ask(client, chan, user_id, args, db)
     elif sub == "analyze":     await cmd_analyze(client, chan, user_id, args, db)
     elif sub == "optimize":    await cmd_optimize(client, chan, user_id, args, db)
+    elif sub == "panic":       await cmd_panic(client, chan, user_id, args, db)
     elif sub == "audit":       await cmd_audit(client, chan)
     elif sub == "status":      await cmd_status(client, chan, user_id)
     else:
-        await client.chat_postMessage(channel=chan, text=f"Unknown command `{sub}`. Type `/db` for help.")
-
+        await client.chat_postMessage(channel=chan,
+            text=f"Unknown command `{sub}`. Type `/db` for help.")
 
 # ── Subcommand implementations ─────────────────────────────────────────────────
 
@@ -691,8 +306,11 @@ async def cmd_list_connections(client, chan, db):
         r    = await db.list_connections()
         data = r.get("data", r)
         if isinstance(data, list) and data:
-            lines = [f"• `{c.get('id', c.get('connection_id','?'))}` — {c.get('name', c.get('db_name','unnamed'))}" for c in data]
-            text  = "*Your AutoDB Connections:*\n" + "\n".join(lines) + "\n\nRun `/db connect <id>` to activate one."
+            lines = [
+                f"• `{c.get('id', c.get('connection_id','?'))}` — {c.get('name', c.get('db_name','unnamed'))}"
+                for c in data
+            ]
+            text = "*Your AutoDB Connections:*\n" + "\n".join(lines) + "\n\nRun `/db connect <id>` to activate one."
         else:
             text = "No connections found. Add one at autodb.app."
         await client.chat_update(channel=chan, ts=msg["ts"], text=text)
@@ -703,12 +321,76 @@ async def cmd_list_connections(client, chan, db):
 async def cmd_query(client, chan, user_id, query, db):
     conn = connections.get(user_id, {}).get("default_connection")
     if not conn:
-        await client.chat_postMessage(channel=chan, text="⚠️ No database connected. Use `/db connect <id>` first.")
+        await client.chat_postMessage(channel=chan,
+            text="⚠️ No database connected. Use `/db connect <id>` first.")
         return
     msg = await client.chat_postMessage(channel=chan, text="🔄 Translating to SQL and querying...")
     try:
         r = await db.query_database(conn, query)
-        await client.chat_update(channel=chan, ts=msg["ts"], text="Results", blocks=format_query_results(r))
+        await client.chat_update(channel=chan, ts=msg["ts"], text="Results",
+            blocks=format_query_results(r))
+    except Exception as e:
+        await client.chat_update(channel=chan, ts=msg["ts"], text=f"❌ {e}")
+
+
+async def cmd_ask(client, chan, user_id, question, db):
+    """
+    AI database intelligence.
+    Usage: /db ask why is our checkout page slow?
+    Runs a diagnostic query AND surfaces an optimization tip.
+    """
+    conn = connections.get(user_id, {}).get("default_connection")
+    if not conn:
+        await client.chat_postMessage(channel=chan,
+            text="⚠️ No database connected. Use `/db connect <id>` first.")
+        return
+    if not question.strip():
+        await client.chat_postMessage(channel=chan,
+            text="Usage: `/db ask <question>`\nExample: `/db ask why is our checkout page slow?`")
+        return
+
+    msg = await client.chat_postMessage(channel=chan, text="🤔 Thinking about your database...")
+    try:
+        query_result = await db.query_database(conn, question)
+        data         = query_result.get("data", {})
+        sql          = data.get("sql", "")
+        output       = data.get("markdown_output", "")
+        conf         = int(data.get("confidence", 0) * 100)
+
+        # Piggyback an optimization check if there's generated SQL
+        opt_tip = ""
+        if sql:
+            opt_result = await db.optimize_query(conn, sql)
+            if opt_result.get("success"):
+                alts = opt_result.get("alternatives", [])
+                if alts:
+                    tip    = alts[0]
+                    opt_tip = (
+                        f"\n\n💡 *Performance tip:* {tip.get('explanation', '')}"
+                        f" _({tip.get('estimated_improvement', '')})_"
+                    )
+                indexes = opt_result.get("index_recommendations", [])
+                if indexes:
+                    idx_sql = indexes[0].get("create_sql", "")
+                    opt_tip += f"\n🔍 *Recommended index:* `{idx_sql[:100]}`"
+
+        blocks = [
+            {"type": "header", "text": {"type": "plain_text",
+                "text": f"🧠  {question[:72]}"}},
+        ]
+        if sql:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                "text": f"*Query used:*\n```{sql[:600]}```"}})
+        if output:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                "text": f"*Results:*\n```{output[:1800]}```{opt_tip}"}})
+        elif not sql:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                "text": "_No SQL could be generated for that question. Try rephrasing it._"}})
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
+            "text": f"Confidence: {conf}% · AutoDB text-to-SQL"}]})
+
+        await client.chat_update(channel=chan, ts=msg["ts"], text="Answer", blocks=blocks)
     except Exception as e:
         await client.chat_update(channel=chan, ts=msg["ts"], text=f"❌ {e}")
 
@@ -716,7 +398,8 @@ async def cmd_query(client, chan, user_id, query, db):
 async def cmd_analyze(client, chan, user_id, sql, db):
     conn = connections.get(user_id, {}).get("default_connection")
     if not conn:
-        await client.chat_postMessage(channel=chan, text="⚠️ No database connected. Use `/db connect <id>` first.")
+        await client.chat_postMessage(channel=chan,
+            text="⚠️ No database connected. Use `/db connect <id>` first.")
         return
     if not sql.strip():
         await client.chat_postMessage(channel=chan, text="Usage: `/db analyze <SQL>`")
@@ -726,7 +409,8 @@ async def cmd_analyze(client, chan, user_id, sql, db):
     try:
         r = await db.analyze_migration(conn, sql)
         if not r.get("success"):
-            await client.chat_update(channel=chan, ts=msg["ts"], text=f"❌ Analysis failed: {r.get('error', r)}")
+            await client.chat_update(channel=chan, ts=msg["ts"],
+                text=f"❌ Analysis failed: {r.get('error', r)}")
             return
 
         data         = r.get("data", {})
@@ -738,12 +422,13 @@ async def cmd_analyze(client, chan, user_id, sql, db):
             approvals[token] = {
                 "sql": sql, "connection_id": conn, "data": data,
                 "user_id": user_id, "channel_id": chan,
-                "approved_by": [], "needs_second": needs_second, "status": "pending"
+                "approved_by": [], "needs_second": needs_second, "status": "pending",
             }
 
         await client.chat_update(channel=chan, ts=msg["ts"], text="Migration analysis",
-                                  blocks=format_risk_card(data, needs_second))
+            blocks=format_risk_card(data, needs_second))
 
+        # Ping approver for high-risk migrations
         if needs_second and APPROVER_SLACK_ID and APPROVER_SLACK_ID != user_id:
             await client.chat_postMessage(channel=chan, text=(
                 f"🚨 <@{APPROVER_SLACK_ID}> — your approval is needed for a "
@@ -751,7 +436,6 @@ async def cmd_analyze(client, chan, user_id, sql, db):
                 f"(score {score}/100) submitted by <@{user_id}>.\n"
                 f"Please click *Approve & Run* or *Reject* on the card above."
             ))
-
     except Exception as e:
         await client.chat_update(channel=chan, ts=msg["ts"], text=f"❌ {e}")
 
@@ -770,16 +454,22 @@ async def cmd_optimize(client, chan, user_id, sql, db):
             cost    = r.get("execution_plan", {}).get("total_cost", "N/A")
             blocks  = [
                 {"type": "header", "text": {"type": "plain_text", "text": "⚡ Query Optimization Report"}},
-                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Original cost:* {cost} units"}}
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"*Original cost:* {cost} units"}},
             ]
             if alts:
-                blocks.append({"type": "section", "text": {"type": "mrkdwn", "text":
-                    "*Suggested rewrites:*\n" + "\n".join(f"• {a['explanation']} _({a['estimated_improvement']})_" for a in alts[:3])}})
+                blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                    "text": "*Suggested rewrites:*\n" + "\n".join(
+                        f"• {a['explanation']} _({a['estimated_improvement']})_"
+                        for a in alts[:3]
+                    )}})
             if indexes:
-                blocks.append({"type": "section", "text": {"type": "mrkdwn", "text":
-                    "*Recommended indexes:*\n" + "\n".join(f"• `{i['create_sql'][:80]}`" for i in indexes[:3])}})
+                blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                    "text": "*Recommended indexes:*\n" + "\n".join(
+                        f"• `{i['create_sql'][:80]}`" for i in indexes[:3]
+                    )}})
             if not alts and not indexes:
-                blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "✅ Query looks good — no changes needed."}})
+                blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                    "text": "✅ Query looks good — no changes needed."}})
             await client.chat_update(channel=chan, ts=msg["ts"], text="Optimization", blocks=blocks)
         else:
             await client.chat_update(channel=chan, ts=msg["ts"], text=f"❌ {r.get('error', r)}")
@@ -787,29 +477,103 @@ async def cmd_optimize(client, chan, user_id, sql, db):
         await client.chat_update(channel=chan, ts=msg["ts"], text=f"❌ {e}")
 
 
+async def cmd_panic(client, chan, user_id, arg, db):
+    """
+    Emergency rollback.
+    Usage:
+      /db panic          → auto-finds the most recent reversible approved migration
+      /db panic <token>  → targets a specific approval token
+    """
+    target = None
+
+    if arg.strip():
+        target = approvals.get(arg.strip())
+        if not target:
+            await client.chat_postMessage(channel=chan,
+                text=f"❌ No approval record found for token `{arg.strip()}`.")
+            return
+    else:
+        # Walk backwards through approvals to find the last reversible one
+        for rec in reversed(list(approvals.values())):
+            if rec.get("status") == "approved":
+                rollback = rec.get("data", {}).get("rollback_plan", {})
+                if not rollback.get("has_irreversible"):
+                    target = rec
+                    break
+
+    if not target:
+        await client.chat_postMessage(channel=chan, blocks=[
+            {"type": "header", "text": {"type": "plain_text", "text": "🚨  PANIC — No target found"}},
+            {"type": "section", "text": {"type": "mrkdwn",
+                "text": (
+                    "No reversible migration found to roll back.\n"
+                    "Use `/db audit` to find a specific approval token, "
+                    "then run `/db panic <token>`."
+                )}},
+        ])
+        return
+
+    rollback_sql  = target["data"].get("rollback_plan", {}).get("combined_script", "")
+    category      = target["data"].get("risk_category", "unknown")
+    score         = target["data"].get("risk_score", 0)
+    original_sql  = target.get("sql", "")
+
+    payload = json.dumps({
+        "sql":  rollback_sql,
+        "conn": target["connection_id"],
+    })
+
+    await client.chat_postMessage(channel=chan, blocks=[
+        {"type": "header", "text": {"type": "plain_text", "text": "🚨  PANIC — Emergency Rollback"}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": (
+            f"*Rolling back:*\n```{original_sql[:200]}```\n"
+            f"*Rollback SQL (auto-generated by AutoDB):*\n```{rollback_sql[:300]}```\n"
+            f"*Original risk:* {category} ({score}/100) · "
+            f"*Originally run by:* <@{target['user_id']}>"
+        )}},
+        {"type": "actions", "elements": [
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "🔴 EXECUTE ROLLBACK"},
+                "style": "danger",
+                "value": payload,
+                "action_id": "execute_panic_rollback",
+                "confirm": {
+                    "title":   {"type": "plain_text", "text": "This will roll back production"},
+                    "text":    {"type": "mrkdwn",     "text": "This executes immediately and cannot be undone. Proceed?"},
+                    "confirm": {"type": "plain_text", "text": "Yes, roll it back"},
+                    "deny":    {"type": "plain_text", "text": "Cancel"},
+                },
+            },
+            {"type": "button", "text": {"type": "plain_text", "text": "Cancel"},
+             "value": "cancel", "action_id": "cancel_panic"},
+        ]},
+        {"type": "context", "elements": [{"type": "mrkdwn",
+            "text": f"<!channel> 🚨 Emergency rollback initiated by <@{user_id}>"}]},
+    ])
+
+
 async def cmd_audit(client, chan):
     await client.chat_postMessage(channel=chan, blocks=[
         {"type": "header", "text": {"type": "plain_text", "text": "📋 Migration Audit Log"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": format_audit_log()}}
+        {"type": "section", "text": {"type": "mrkdwn", "text": format_audit_log()}},
     ])
 
 
 async def cmd_status(client, chan, user_id):
     conn    = connections.get(user_id, {}).get("default_connection", "_None set_")
     pending = sum(1 for a in approvals.values() if a.get("status") == "pending")
-    oracle_status = "✅ Ready" if ORACLE_SCHEMA_READY else ("⚙️ Configured" if ORACLE_CONNECTION_ID else "❌ Not configured")
     await client.chat_postMessage(channel=chan, blocks=[
         {"type": "header", "text": {"type": "plain_text", "text": "📊 SlackDB Status"}},
         {"type": "section", "fields": [
             {"type": "mrkdwn", "text": f"*Your active DB:*\n`{conn}`"},
             {"type": "mrkdwn", "text": f"*Pending approvals:*\n{pending}"},
             {"type": "mrkdwn", "text": f"*Migrations run:*\n{len(audit_log)}"},
-            {"type": "mrkdwn", "text": f"*Approver:*\n{'<@'+APPROVER_SLACK_ID+'>' if APPROVER_SLACK_ID else '⚠️ Not set'}"},
-            {"type": "mrkdwn", "text": f"*Oracle (RAG):*\n{oracle_status}"},
-            {"type": "mrkdwn", "text": f"*Claude:*\n{'✅ Set' if ANTHROPIC_API_KEY else '⚠️ Not set (summaries use fallback)'}"},
-        ]}
+            {"type": "mrkdwn", "text": f"*Approver:*\n{'<@'+APPROVER_SLACK_ID+'>' if APPROVER_SLACK_ID else '⚠️ Not set (add APPROVER_SLACK_ID to .env)'}"},
+            {"type": "mrkdwn", "text": f"*AutoDB key:*\n{'✅ Set' if AUTODB_API_KEY else '❌ Missing'}"},
+            {"type": "mrkdwn", "text": "*Health:*\n✅ Operational"},
+        ]},
     ])
-
 
 # ── Button handlers ────────────────────────────────────────────────────────────
 
@@ -821,13 +585,16 @@ async def handle_approve(ack, body, client):
     approval = approvals.get(token)
 
     if not approval:
-        await client.chat_postMessage(channel=body["channel"]["id"], text="❌ Approval not found or already processed.")
+        await client.chat_postMessage(channel=body["channel"]["id"],
+            text="❌ Approval not found or already processed.")
         return
+
     if approval["status"] != "pending":
         await client.chat_postMessage(channel=body["channel"]["id"],
             text=f"ℹ️ This migration was already *{approval['status']}*.")
         return
 
+    # Enforce designated approver for high-risk
     if approval["needs_second"] and APPROVER_SLACK_ID:
         if actor_id not in (APPROVER_SLACK_ID, approval["user_id"]):
             await client.chat_postMessage(channel=body["channel"]["id"],
@@ -849,26 +616,34 @@ async def handle_approve(ack, body, client):
             text="Migration approved",
             blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": (
                 f"✅ *Migration approved & executed*\n"
-                f"Approved by: <@{actor_id}>  ·  Requested by: <@{approval['user_id']}>\n"
-                f"Execution ID: `{req_id}`  ·  {now}"
-            )}}]
+                f"Approved by: <@{actor_id}> · Requested by: <@{approval['user_id']}>\n"
+                f"Execution ID: `{req_id}` · {now}"
+            )}}],
         )
         await client.chat_postMessage(
             channel=approval["channel_id"], thread_ts=body["message"]["ts"],
-            text=f"✅ Migration running. Execution ID: `{req_id}`\n```{approval['sql'][:300]}```"
+            text=f"✅ Migration running. Execution ID: `{req_id}`\n```{approval['sql'][:300]}```",
         )
-        audit_log.append({"sql": approval["sql"], "actor": actor_id, "requester": approval["user_id"],
-            "risk": approval["data"].get("risk_category","?"), "score": approval["data"].get("risk_score",0),
-            "status": "approved", "request_id": req_id, "time": now})
-        asyncio.create_task(_poll_status(client, approval["channel_id"], body["message"]["ts"], req_id, db))
+        audit_log.append({
+            "sql": approval["sql"], "actor": actor_id, "requester": approval["user_id"],
+            "risk": approval["data"].get("risk_category","?"),
+            "score": approval["data"].get("risk_score", 0),
+            "status": "approved", "request_id": req_id, "time": now,
+        })
+        asyncio.create_task(_poll_status(client, approval["channel_id"],
+            body["message"]["ts"], req_id, db))
     else:
         approval["status"] = "failed"
         err = result.get("error", result)
-        await client.chat_postMessage(channel=approval["channel_id"], thread_ts=body["message"]["ts"],
+        await client.chat_postMessage(channel=approval["channel_id"],
+            thread_ts=body["message"]["ts"],
             text=f"❌ *Execution failed:*\n```{err}```")
-        audit_log.append({"sql": approval["sql"], "actor": actor_id, "requester": approval["user_id"],
-            "risk": approval["data"].get("risk_category","?"), "score": approval["data"].get("risk_score",0),
-            "status": "failed", "time": now})
+        audit_log.append({
+            "sql": approval["sql"], "actor": actor_id, "requester": approval["user_id"],
+            "risk": approval["data"].get("risk_category","?"),
+            "score": approval["data"].get("risk_score", 0),
+            "status": "failed", "time": now,
+        })
 
 
 @slack_app.action("reject_migration")
@@ -878,18 +653,24 @@ async def handle_reject(ack, body, client):
     actor_id = body["user"]["id"]
     now      = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     approval = approvals.get(token)
+
     if approval:
         approval["status"] = "rejected"
-        audit_log.append({"sql": approval["sql"], "actor": actor_id, "requester": approval["user_id"],
-            "risk": approval["data"].get("risk_category","?"), "score": approval["data"].get("risk_score",0),
-            "status": "rejected", "time": now})
+        audit_log.append({
+            "sql": approval["sql"], "actor": actor_id, "requester": approval["user_id"],
+            "risk": approval["data"].get("risk_category","?"),
+            "score": approval["data"].get("risk_score", 0),
+            "status": "rejected", "time": now,
+        })
+
     await client.chat_update(
         channel=body["channel"]["id"], ts=body["message"]["ts"],
         text="Migration rejected",
         blocks=[{"type": "section", "text": {"type": "mrkdwn",
-            "text": f"❌ *Migration rejected* by <@{actor_id}> at {now}"}}]
+            "text": f"❌ *Migration rejected* by <@{actor_id}> at {now}"}}],
     )
-    await client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
+    await client.chat_postMessage(channel=body["channel"]["id"],
+        thread_ts=body["message"]["ts"],
         text=f"❌ Migration rejected by <@{actor_id}>.")
 
 
@@ -898,19 +679,81 @@ async def handle_view_details(ack, body, client):
     await ack()
     token    = body["actions"][0]["value"]
     approval = approvals.get(token)
+
     if not approval:
         await client.chat_postMessage(channel=body["channel"]["id"],
             thread_ts=body["message"]["ts"], text="❌ Details not found.")
         return
+
     d = approval["data"]
     details = json.dumps({
-        "risk_score": d.get("risk_score"), "risk_category": d.get("risk_category"),
-        "affected_tables": d.get("affected_tables"), "sandbox_result": d.get("sandbox_result"),
-        "rollback_plan": d.get("rollback_plan"), "warnings": d.get("warnings", []),
+        "risk_score":     d.get("risk_score"),
+        "risk_category":  d.get("risk_category"),
+        "affected_tables": d.get("affected_tables"),
+        "sandbox_result": d.get("sandbox_result"),
+        "rollback_plan":  d.get("rollback_plan"),
+        "warnings":       d.get("warnings", []),
     }, indent=2)
-    await client.chat_postMessage(channel=body["channel"]["id"], thread_ts=body["message"]["ts"],
+
+    await client.chat_postMessage(channel=body["channel"]["id"],
+        thread_ts=body["message"]["ts"],
         text=f"📋 *Full Analysis*\n```{details[:2800]}```")
 
+
+@slack_app.action("execute_panic_rollback")
+async def handle_panic_rollback(ack, body, client):
+    await ack()
+    payload  = json.loads(body["actions"][0]["value"])
+    actor_id = body["user"]["id"]
+    now      = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    rollback_sql = payload.get("sql", "")
+    conn_id      = payload.get("conn", "")
+
+    db = AutoDBClient(AUTODB_API_KEY)
+    try:
+        # Re-analyze the rollback SQL to get a fresh approval token
+        analysis = await db.analyze_migration(conn_id, rollback_sql)
+        if analysis.get("success"):
+            token  = analysis["data"].get("approval_token")
+            result = await db.execute_migration(conn_id, rollback_sql, token)
+            if result.get("success"):
+                req_id = result.get("data", {}).get("request_id", "unknown")
+                await client.chat_update(
+                    channel=body["channel"]["id"], ts=body["message"]["ts"],
+                    text="Rollback executed",
+                    blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": (
+                        f"🔴 *Emergency rollback executed* by <@{actor_id}> at {now}\n"
+                        f"Execution ID: `{req_id}`\n"
+                        f"```{rollback_sql[:300]}```"
+                    )}}],
+                )
+                audit_log.append({
+                    "sql": f"[ROLLBACK] {rollback_sql}", "actor": actor_id,
+                    "requester": actor_id, "risk": "rollback", "score": 0,
+                    "status": "approved", "request_id": req_id, "time": now,
+                })
+                asyncio.create_task(_poll_status(
+                    client, body["channel"]["id"], body["message"]["ts"], req_id, db))
+                return
+
+        await client.chat_postMessage(channel=body["channel"]["id"],
+            thread_ts=body["message"]["ts"],
+            text=f"❌ Rollback execution failed: {analysis.get('error', 'unknown error')}")
+    except Exception as e:
+        await client.chat_postMessage(channel=body["channel"]["id"],
+            thread_ts=body["message"]["ts"], text=f"❌ Rollback failed: {e}")
+
+
+@slack_app.action("cancel_panic")
+async def handle_cancel_panic(ack, body, client):
+    await ack()
+    await client.chat_update(
+        channel=body["channel"]["id"], ts=body["message"]["ts"],
+        text="Panic rollback cancelled.",
+        blocks=[{"type": "section", "text": {"type": "mrkdwn",
+            "text": f"🟡 Emergency rollback cancelled by <@{body['user']['id']}>"}}],
+    )
 
 # ── Background polling ─────────────────────────────────────────────────────────
 
@@ -931,8 +774,9 @@ async def _poll_status(client, chan, thread_ts, request_id, db: AutoDBClient):
         except Exception:
             pass
 
-
 # ── FastAPI routes ─────────────────────────────────────────────────────────────
+
+from fastapi.middleware.cors import CORSMiddleware
 
 api.add_middleware(
     CORSMiddleware,
@@ -945,39 +789,27 @@ api.add_middleware(
 async def slack_events(request: Request):
     return await handler.handle(request)
 
-
 @api.get("/health")
 async def health():
     return {
-        "status": "healthy",
-        "autodb_key": bool(AUTODB_API_KEY),
-        "approver_set": bool(APPROVER_SLACK_ID),
-        "migrations_run": len(audit_log),
+        "status":            "healthy",
+        "autodb_key":        bool(AUTODB_API_KEY),
+        "approver_set":      bool(APPROVER_SLACK_ID),
+        "migrations_run":    len(audit_log),
         "pending_approvals": sum(1 for a in approvals.values() if a.get("status") == "pending"),
-        "oracle_ready": ORACLE_SCHEMA_READY,
-        "oracle_configured": bool(ORACLE_CONNECTION_ID),
-        "claude_configured": bool(ANTHROPIC_API_KEY),
     }
-
 
 @api.get("/audit")
 async def get_audit():
+    total = len(audit_log)
     return {
-        "logs": audit_log,
+        "logs":              audit_log,
         "pending_approvals": sum(1 for a in approvals.values() if a.get("status") == "pending"),
-        "total": len(audit_log),
-        "approved": sum(1 for l in audit_log if l.get("status") == "approved"),
-        "rejected": sum(1 for l in audit_log if l.get("status") == "rejected"),
-        "avg_risk": round(sum(l.get("score", 0) for l in audit_log) / len(audit_log)) if audit_log else 0,
+        "total":             total,
+        "approved":          sum(1 for l in audit_log if l.get("status") == "approved"),
+        "rejected":          sum(1 for l in audit_log if l.get("status") == "rejected"),
+        "avg_risk":          round(sum(l.get("score", 0) for l in audit_log) / total) if total else 0,
     }
-
-
-@api.on_event("startup")
-async def startup():
-    """Initialize Oracle schema on boot if configured."""
-    if ORACLE_CONNECTION_ID and AUTODB_API_KEY:
-        asyncio.create_task(ensure_oracle_schema())
-
 
 if __name__ == "__main__":
     import uvicorn
