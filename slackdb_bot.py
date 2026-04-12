@@ -21,7 +21,7 @@ import httpx
 SLACK_BOT_TOKEN       = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_SIGNING_SECRET  = os.environ.get("SLACK_SIGNING_SECRET")
 AUTODB_API_KEY        = os.environ.get("AUTODB_API_KEY")
-AUTODB_BASE_URL       = "https://api.autodb.app/api/v1"
+AUTODB_BASE_URL       = "http://api.autodb.app/api/v1"
 
 # Slack user ID of whoever must approve high-risk migrations.
 # Set APPROVER_SLACK_ID=U0123456789 in your .env
@@ -109,7 +109,7 @@ def format_risk_card(data: Dict, needs_second: bool = False) -> List[Dict]:
             "text": f"{emoji} Migration Risk: {category.upper()} ({score}/100)"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": (
             f"*SQL:*\n```{sql}```\n"
-            f"*Affected tables:* {', '.join(affected) if affected else 'none detected'}\n"
+            f"*Affected tables:* {', '.join(t['table'] if isinstance(t, dict) else t for t in affected) if affected else 'none detected'}\n"
             f"*Sandbox:* {'✅ Passed' if sandbox else '❌ Failed'}  "
             f"*Rollback:* {'⚠️ Irreversible' if irreversible else '✅ Available'}"
             f"{warning}"
