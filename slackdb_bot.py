@@ -23,7 +23,7 @@ import httpx
 SLACK_BOT_TOKEN      = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET")
 AUTODB_API_KEY       = os.environ.get("AUTODB_API_KEY")
-AUTODB_BASE_URL      = "https://api.autodb.app/api/v1"  # FIXED: https
+AUTODB_BASE_URL      = "http://api.autodb.app/api/v1"  
 
 APPROVER_SLACK_ID   = os.environ.get("APPROVER_SLACK_ID", "")
 HIGH_RISK_THRESHOLD = 50
