@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SlackDB Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #ffffff;
+    --bg2: #f5f5f3;
+    --bg3: #efefec;
+    --text: #1a1a18;
+    --text2: #6b6b67;
+    --text3: #9b9b96;
+    --border: rgba(0,0,0,0.1);
+    --border2: rgba(0,0,0,0.18);
+    --radius: 8px;
+    --radius-lg: 12px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1a;
+      --bg2: #252523;
+      --bg3: #2e2e2b;
+      --text: #f0f0ec;
+      --text2: #9b9b96;
+      --text3: #6b6b67;
+      --border: rgba(255,255,255,0.1);
+      --border2: rgba(255,255,255,0.18);
+    }
+    .badge-low { background: #173404 !important; color: #C0DD97 !important; }
+    .badge-medium { background: #412402 !important; color: #FAC775 !important; }
+    .badge-high { background: #4A1B0C !important; color: #F5C4B3 !important; }
+    .badge-critical { background: #501313 !important; color: #F7C1C1 !important; }
+    .badge-approved { background: #173404 !important; color: #C0DD97 !important; }
+    .badge-rejected { background: #501313 !important; color: #F7C1C1 !important; }
+    .badge-pending { background: #412402 !important; color: #FAC775 !important; }
+  }
+
+  body {
+    font-family: 'IBM Plex Sans', sans-serif;
+    background: var(--bg3);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 2rem;
+  }
+
+  .wrap { max-width: 1100px; margin: 0 auto; }
+
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.75rem;
+  }
+
+  .logo { display: flex; align-items: center; gap: 12px; }
+
+  .logo-icon {
+    width: 36px; height: 36px;
+    background: var(--text);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .logo-icon svg { width: 20px; height: 20px; }
+
+  .logo-text { font-size: 18px; font-weight: 500; letter-spacing: -0.3px; }
+  .logo-sub { font-size: 12px; color: var(--text2); font-family: 'IBM Plex Mono', monospace; }
+
+  .live-badge {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 12px; color: var(--text2);
+    font-family: 'IBM Plex Mono', monospace;
+    background: var(--bg2);
+    border: 0.5px solid var(--border);
+    padding: 6px 14px;
+    border-radius: 20px;
+  }
+
+  .live-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: #639922;
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
+
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0,1fr));
+    gap: 10px;
+    margin-bottom: 1.25rem;
+  }
+
+  .metric {
+    background: var(--bg2);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+  }
+
+  .metric-label {
+    font-size: 11px; color: var(--text2);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 8px;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .metric-value {
+    font-size: 28px; font-weight: 500; line-height: 1;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .metric-sub { font-size: 11px; color: var(--text3); margin-top: 5px; }
+  .green { color: #3B6D11; }
+  .red { color: #A32D2D; }
+  .amber { color: #854F0B; }
+
+  .grid2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .card {
+    background: var(--bg);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.1rem 1.25rem;
+  }
+
+  .card-title {
+    font-size: 11px; font-weight: 500;
+    color: var(--text2);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 1rem;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .risk-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .risk-row:last-child { margin-bottom: 0; }
+  .risk-label { font-size: 12px; color: var(--text2); width: 58px; flex-shrink: 0; font-family: 'IBM Plex Mono', monospace; }
+  .risk-track { flex: 1; height: 8px; background: var(--bg3); border-radius: 4px; overflow: hidden; }
+  .risk-fill { height: 100%; border-radius: 4px; transition: width 1s ease; }
+  .risk-count { font-size: 12px; font-weight: 500; width: 24px; text-align: right; font-family: 'IBM Plex Mono', monospace; }
+
+  .activity-item { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; border-bottom: 0.5px solid var(--border); }
+  .activity-item:last-child { border-bottom: none; }
+  .activity-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
+  .dot-green { background: #639922; }
+  .dot-red { background: #E24B4A; }
+  .dot-amber { background: #BA7517; }
+  .dot-blue { background: #378ADD; }
+  .activity-text { font-size: 12px; color: var(--text); line-height: 1.5; }
+  .activity-time { font-size: 11px; color: var(--text3); font-family: 'IBM Plex Mono', monospace; margin-top: 2px; }
+
+  .audit-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+  .filter-btns { display: flex; gap: 6px; }
+
+  .filter-btn {
+    font-size: 11px; padding: 3px 11px;
+    border-radius: 20px;
+    border: 0.5px solid var(--border2);
+    background: transparent;
+    color: var(--text2);
+    cursor: pointer;
+    font-family: 'IBM Plex Mono', monospace;
+    transition: all 0.15s;
+  }
+
+  .filter-btn.active {
+    background: var(--text);
+    color: var(--bg);
+    border-color: var(--text);
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left; font-size: 11px; font-weight: 500;
+    color: var(--text2); padding: 0 0 10px;
+    border-bottom: 0.5px solid var(--border);
+    font-family: 'IBM Plex Mono', monospace;
+  }
+  td { padding: 10px 0; border-bottom: 0.5px solid var(--border); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+
+  .badge {
+    display: inline-block; font-size: 10px; font-weight: 500;
+    padding: 2px 9px; border-radius: 20px;
+    font-family: 'IBM Plex Mono', monospace; white-space: nowrap;
+  }
+
+  .badge-low { background: #EAF3DE; color: #3B6D11; }
+  .badge-medium { background: #FAEEDA; color: #854F0B; }
+  .badge-high { background: #FAECE7; color: #993C1D; }
+  .badge-critical { background: #FCEBEB; color: #A32D2D; }
+  .badge-approved { background: #EAF3DE; color: #3B6D11; }
+  .badge-rejected { background: #FCEBEB; color: #A32D2D; }
+  .badge-pending { background: #FAEEDA; color: #854F0B; }
+
+  .sql-cell {
+    font-family: 'IBM Plex Mono', monospace; font-size: 12px;
+    max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  .mono { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--text2); }
+
+  .avatar {
+    width: 24px; height: 24px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 500; margin-right: 6px;
+    flex-shrink: 0;
+  }
+
+  .av-blue { background: #B5D4F4; color: #0C447C; }
+  .av-teal { background: #9FE1CB; color: #085041; }
+  .av-purple { background: #CECBF6; color: #3C3489; }
+
+  .empty-state {
+    text-align: center; color: var(--text2); font-size: 13px;
+    padding: 2.5rem 0; font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .conn-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 0.5px solid var(--border); }
+  .conn-row:last-child { border-bottom: none; }
+  .conn-name { font-size: 13px; font-weight: 500; }
+  .conn-meta { font-size: 11px; color: var(--text2); font-family: 'IBM Plex Mono', monospace; margin-top: 2px; }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #639922; display: inline-block; margin-right: 6px; }
+
+  @media (max-width: 700px) {
+    body { padding: 1rem; }
+    .metrics { grid-template-columns: 1fr 1fr; }
+    .grid2 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="header">
+    <div class="logo">
+      <div class="logo-icon">
+        <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="10" cy="5.5" rx="7" ry="3" stroke="white" stroke-width="1.4"/>
+          <path d="M3 5.5v5c0 1.66 3.13 3 7 3s7-1.34 7-3v-5" stroke="white" stroke-width="1.4"/>
+          <path d="M3 10.5v4c0 1.66 3.13 3 7 3s7-1.34 7-3v-4" stroke="white" stroke-width="1.4"/>
+        </svg>
+      </div>
+      <div>
+        <div class="logo-text">SlackDB</div>
+        <div class="logo-sub">migration dashboard</div>
+      </div>
+    </div>
+    <div class="live-badge">
+      <div class="live-dot"></div>
+      <span id="live-text">connecting...</span>
+    </div>
+  </div>
+
+  <div class="metrics">
+    <div class="metric">
+      <div class="metric-label">migrations run</div>
+      <div class="metric-value" id="m-total">—</div>
+      <div class="metric-sub">all time</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">approved</div>
+      <div class="metric-value green" id="m-approved">—</div>
+      <div class="metric-sub">executed safely</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">rejected</div>
+      <div class="metric-value red" id="m-rejected">—</div>
+      <div class="metric-sub">blocked by team</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">avg risk score</div>
+      <div class="metric-value amber" id="m-risk">—</div>
+      <div class="metric-sub">out of 100</div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title">risk distribution</div>
+      <div id="risk-bars">
+        <div class="risk-row"><div class="risk-label">critical</div><div class="risk-track"><div class="risk-fill" id="bar-critical" style="width:0%;background:#E24B4A"></div></div><div class="risk-count" id="cnt-critical">0</div></div>
+        <div class="risk-row"><div class="risk-label">high</div><div class="risk-track"><div class="risk-fill" id="bar-high" style="width:0%;background:#D85A30"></div></div><div class="risk-count" id="cnt-high">0</div></div>
+        <div class="risk-row"><div class="risk-label">medium</div><div class="risk-track"><div class="risk-fill" id="bar-medium" style="width:0%;background:#BA7517"></div></div><div class="risk-count" id="cnt-medium">0</div></div>
+        <div class="risk-row"><div class="risk-label">low</div><div class="risk-track"><div class="risk-fill" id="bar-low" style="width:0%;background:#639922"></div></div><div class="risk-count" id="cnt-low">0</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">recent activity</div>
+      <div id="activity-list">
+        <div class="activity-item"><div class="activity-dot dot-blue"></div><div><div class="activity-text">Dashboard connected to SlackDB</div><div class="activity-time">just now</div></div></div>
+        <div class="activity-item"><div class="activity-dot dot-amber"></div><div><div class="activity-text">Waiting for first migration...</div><div class="activity-time">use /db analyze in Slack</div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:10px;">
+    <div class="audit-header">
+      <div class="card-title" style="margin-bottom:0">migration audit log</div>
+      <div class="filter-btns">
+        <button class="filter-btn active" onclick="filterLog('all',this)">all</button>
+        <button class="filter-btn" onclick="filterLog('approved',this)">approved</button>
+        <button class="filter-btn" onclick="filterLog('rejected',this)">rejected</button>
+        <button class="filter-btn" onclick="filterLog('pending',this)">pending</button>
+      </div>
+    </div>
+    <table>
+      <thead><tr>
+        <th>SQL</th><th>risk</th><th>status</th><th>actor</th><th>time</th>
+      </tr></thead>
+      <tbody id="audit-tbody">
+        <tr><td colspan="5"><div class="empty-state">loading...</div></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="card-title">active connections</div>
+    <div class="conn-row">
+      <div>
+        <div class="conn-name"><span class="status-dot"></span>Supabase — Test</div>
+        <div class="conn-meta">aws-1-us-west-2.pooler.supabase.com · 3 tables · orders, customers, order_items</div>
+      </div>
+      <span class="badge badge-approved">active</span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const API = 'https://web-production-64fd8.up.railway.app';
+let allLogs = [];
+let filter = 'all';
+
+async function fetchData() {
+  try {
+    const r = await fetch(API + '/audit');
+    const d = await r.json();
+    allLogs = d.logs || [];
+    document.getElementById('m-total').textContent = d.total ?? allLogs.length;
+    document.getElementById('m-approved').textContent = d.approved ?? 0;
+    document.getElementById('m-rejected').textContent = d.rejected ?? 0;
+    document.getElementById('m-risk').textContent = d.avg_risk || '—';
+    document.getElementById('live-text').textContent = 'live · ' + allLogs.length + ' migrations · ' + (d.pending_approvals || 0) + ' pending';
+    updateBars();
+    updateTable();
+    updateActivity();
+  } catch(e) {
+    document.getElementById('live-text').textContent = 'reconnecting...';
+  }
+}
+
+function updateBars() {
+  const c = {critical:0, high:0, medium:0, low:0};
+  allLogs.forEach(l => { if(c[l.risk]!==undefined) c[l.risk]++; });
+  const max = Math.max(...Object.values(c), 1);
+  ['critical','high','medium','low'].forEach(r => {
+    document.getElementById('bar-'+r).style.width = Math.round(c[r]/max*100)+'%';
+    document.getElementById('cnt-'+r).textContent = c[r];
+  });
+}
+
+function updateTable() {
+  const rows = filter === 'all' ? allLogs : allLogs.filter(l => l.status === filter);
+  const tbody = document.getElementById('audit-tbody');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5"><div class="empty-state">no entries' + (filter !== 'all' ? ' matching "'+filter+'"' : '') + '</div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = [...rows].reverse().map(l => `
+    <tr>
+      <td><div class="sql-cell">${escHtml(l.sql || '')}</div></td>
+      <td><span class="badge badge-${l.risk||'medium'}">${l.risk||'?'} · ${l.score||0}</span></td>
+      <td><span class="badge badge-${l.status||'pending'}">${l.status||'pending'}</span></td>
+      <td style="display:flex;align-items:center;">
+        <span class="avatar av-blue">${(l.actor||'?').slice(0,2).toUpperCase()}</span>
+        <span class="mono">${escHtml(l.actor||'unknown')}</span>
+      </td>
+      <td><span class="mono">${escHtml(l.time||'')}</span></td>
+    </tr>
+  `).join('');
+}
+
+function updateActivity() {
+  if (!allLogs.length) return;
+  const recent = [...allLogs].reverse().slice(0,4);
+  const icons = {approved:'dot-green', rejected:'dot-red', pending:'dot-amber', failed:'dot-red'};
+  const list = document.getElementById('activity-list');
+  list.innerHTML = recent.map(l => `
+    <div class="activity-item">
+      <div class="activity-dot ${icons[l.status]||'dot-blue'}"></div>
+      <div>
+        <div class="activity-text">${escHtml((l.sql||'').slice(0,60))}${(l.sql||'').length>60?'...':''}</div>
+        <div class="activity-time">${l.status} by ${escHtml(l.actor||'?')} · ${escHtml(l.time||'')}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function filterLog(f, btn) {
+  filter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  updateTable();
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+fetchData();
+setInterval(fetchData, 8000);
+</script>
+</body>
+</html>
