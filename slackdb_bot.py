@@ -293,11 +293,49 @@ async def cmd_connect(client, chan, user_id, conn_id):
         await client.chat_postMessage(channel=chan,
             text="Usage: `/db connect <connection_id>`\nRun `/db connections` to list available IDs.")
         return
-    connections[user_id] = {"default_connection": conn_id.strip()}
-    await client.chat_postMessage(channel=chan, text=(
-        f"✅ *Connected!* Active database: `{conn_id.strip()}`\n"
-        f"Try `/db query show me all tables` or `/db analyze ALTER TABLE users ADD COLUMN phone TEXT`"
-    ))
+
+    conn_id = conn_id.strip()
+    connections[user_id] = {"default_connection": conn_id}
+
+    msg = await client.chat_postMessage(channel=chan,
+        text=f"✅ *Connected to* `{conn_id}`\n🔄 Introspecting schema — this takes a few seconds...")
+
+    db = AutoDBClient(AUTODB_API_KEY)
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as c:
+            resp = await c.post(
+                f"{AUTODB_BASE_URL}/connections/{conn_id}/introspect",
+                headers={"Content-Type": "application/json", "X-API-Key": AUTODB_API_KEY}
+            )
+            r = resp.json()
+
+        if r.get("success"):
+            data        = r.get("data", {})
+            table_count = data.get("table_count", "?")
+            tables      = data.get("tables", [])
+            preview     = ", ".join(tables[:5])
+            if len(tables) > 5:
+                preview += f" +{len(tables)-5} more"
+            await client.chat_update(channel=chan, ts=msg["ts"], text="Connected", blocks=[
+                {"type": "section", "text": {"type": "mrkdwn", "text": (
+                    f"✅ *Connected & schema loaded*\n"
+                    f"Database: `{conn_id}`\n"
+                    f"*{table_count} tables found:* {preview}\n\n"
+                    f"Ready to use `/db analyze`, `/db query`, and `/db ask`."
+                )}}
+            ])
+        else:
+            err = r.get("error", r)
+            await client.chat_update(channel=chan, ts=msg["ts"], text="Connected", blocks=[
+                {"type": "section", "text": {"type": "mrkdwn", "text": (
+                    f"✅ *Connected to* `{conn_id}`\n"
+                    f"⚠️ Schema introspection failed: `{err}`\n"
+                    f"Run `/db introspect` to retry before analyzing migrations."
+                )}}
+            ])
+    except Exception as e:
+        await client.chat_update(channel=chan, ts=msg["ts"],
+            text=f"✅ Connected to `{conn_id}` but introspection errored: `{e}`\nRun `/db introspect` to retry.")
 
 
 async def cmd_list_connections(client, chan, db):
