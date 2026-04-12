@@ -55,8 +55,16 @@ class AutoDBClient:
             resp = await c.post(f"{self.base_url}{path}", headers=self._h, json=body)
             print(f"[AutoDB] POST {path} → {resp.status_code}: {resp.text[:300]}")
             return resp.json()
+        
     async def run_sandbox(self, conn_id, sql):
-        return await self._post(f"/connections/{conn_id}/migrations/sandbox", {"sql": sql})
+        async with httpx.AsyncClient(timeout=120.0) as c:
+            resp = await c.post(
+                f"{self.base_url}/connections/{conn_id}/migrations/sandbox",
+                headers=self._h,
+                json={"sql": sql}
+            )
+            print(f"[AutoDB] POST sandbox → {resp.status_code}: {resp.text[:300]}")
+            return resp.json()
 
     async def list_connections(self):
         return await self._get("/connections")
