@@ -1,7 +1,0 @@
-{
-  "buildCommand": "",
-  "outputDirectory": ".",
-  "routes": [
-    { "src": "/", "dest": "/dashboard.html" }
-  ]
-}
