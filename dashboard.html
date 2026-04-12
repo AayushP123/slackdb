@@ -7,217 +7,138 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     :root {
-      --bg:        #0f1117;
-      --surface:   #1a1d27;
-      --surface2:  #22263a;
-      --border:    rgba(255,255,255,0.07);
-      --border2:   rgba(255,255,255,0.13);
-      --text:      #e8eaf0;
-      --muted:     #7a7f99;
-      --faint:     #40455e;
-      --green:     #1D9E75;
-      --green-bg:  rgba(29,158,117,0.12);
-      --amber:     #EF9F27;
-      --amber-bg:  rgba(239,159,39,0.12);
-      --red:       #E24B4A;
-      --red-bg:    rgba(226,75,74,0.12);
-      --blue:      #378ADD;
-      --blue-bg:   rgba(55,138,221,0.12);
-      --radius:    10px;
-      --radius-sm: 6px;
+      --bg:       #0f1117;
+      --surface:  #1a1d27;
+      --surface2: #22263a;
+      --border:   rgba(255,255,255,0.07);
+      --border2:  rgba(255,255,255,0.13);
+      --text:     #e8eaf0;
+      --muted:    #7a7f99;
+      --faint:    #40455e;
+      --green:    #1D9E75;
+      --green-bg: rgba(29,158,117,0.12);
+      --amber:    #EF9F27;
+      --amber-bg: rgba(239,159,39,0.12);
+      --red:      #E24B4A;
+      --red-bg:   rgba(226,75,74,0.12);
+      --blue:     #378ADD;
+      --radius:   10px;
+      --radius-sm:6px;
     }
+    body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif; font-size:14px; line-height:1.5; min-height:100vh; }
+    .shell { max-width:1200px; margin:0 auto; padding:24px 20px 48px; }
 
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-      font-size: 14px;
-      line-height: 1.5;
-      min-height: 100vh;
-    }
+    .header { display:flex; align-items:center; justify-content:space-between; padding-bottom:20px; border-bottom:1px solid var(--border); margin-bottom:28px; }
+    .logo { display:flex; align-items:center; gap:12px; }
+    .logo-mark { width:36px; height:36px; background:var(--green); border-radius:9px; display:flex; align-items:center; justify-content:center; }
+    .logo-mark svg { width:20px; height:20px; }
+    .logo-name { font-size:18px; font-weight:600; letter-spacing:-0.3px; }
+    .logo-sub  { font-size:12px; color:var(--muted); margin-top:1px; }
+    .badge { font-size:11px; font-weight:500; padding:3px 10px; background:var(--green-bg); color:var(--green); border:1px solid rgba(29,158,117,0.25); border-radius:20px; }
+    .header-right { display:flex; align-items:center; gap:16px; color:var(--muted); font-size:13px; }
+    .live { display:flex; align-items:center; gap:6px; color:var(--green); font-weight:500; }
+    .dot { width:7px; height:7px; background:var(--green); border-radius:50%; animation:pulse 2s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.3} }
+    .sep { color:var(--border2); }
+    .conn-pill { font-size:12px; font-family:'SF Mono','Fira Code',monospace; background:var(--surface); border:1px solid var(--border2); padding:4px 10px; border-radius:var(--radius-sm); }
 
-    /* ── Layout ── */
-    .shell { max-width: 1200px; margin: 0 auto; padding: 24px 20px 48px; }
+    .error-banner { background:rgba(226,75,74,0.1); border:1px solid rgba(226,75,74,0.3); border-radius:var(--radius-sm); padding:10px 14px; font-size:12px; color:#f0706f; margin-bottom:20px; display:none; }
 
-    /* ── Header ── */
-    .header {
-      display: flex; align-items: center; justify-content: space-between;
-      padding-bottom: 20px;
-      border-bottom: 1px solid var(--border);
-      margin-bottom: 28px;
-    }
-    .logo { display: flex; align-items: center; gap: 12px; }
-    .logo-mark {
-      width: 36px; height: 36px; background: var(--green);
-      border-radius: 9px; display: flex; align-items: center; justify-content: center;
-    }
-    .logo-mark svg { width: 20px; height: 20px; }
-    .logo-name { font-size: 18px; font-weight: 600; letter-spacing: -0.3px; }
-    .logo-sub  { font-size: 12px; color: var(--muted); margin-top: 1px; }
-    .badge {
-      font-size: 11px; font-weight: 500; padding: 3px 10px;
-      background: var(--green-bg); color: var(--green);
-      border: 1px solid rgba(29,158,117,0.25); border-radius: 20px;
-    }
-    .header-right { display: flex; align-items: center; gap: 16px; color: var(--muted); font-size: 13px; }
-    .live { display: flex; align-items: center; gap: 6px; color: var(--green); font-weight: 500; }
-    .dot { width: 7px; height: 7px; background: var(--green); border-radius: 50%;
-           animation: pulse 2s ease-in-out infinite; }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
-    .sep { color: var(--border2); }
-    .conn-pill {
-      font-size: 12px; font-family: 'SF Mono', 'Fira Code', monospace;
-      background: var(--surface); border: 1px solid var(--border2);
-      padding: 4px 10px; border-radius: var(--radius-sm);
-    }
+    .metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:24px; }
+    @media(max-width:720px){.metrics{grid-template-columns:repeat(2,1fr);}}
+    .metric { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px; }
+    .metric-label { font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); margin-bottom:10px; }
+    .metric-value { font-size:32px; font-weight:700; letter-spacing:-1px; line-height:1; }
+    .metric-value.amber { color:var(--amber); }
+    .metric-value.green { color:var(--green); }
+    .metric-sub { font-size:12px; color:var(--muted); margin-top:8px; }
+    .up { color:var(--green); }
 
-    /* ── Metrics row ── */
-    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 24px; }
-    @media (max-width: 720px) { .metrics { grid-template-columns: repeat(2, 1fr); } }
-    .metric {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 18px 20px;
-    }
-    .metric-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 10px; }
-    .metric-value { font-size: 32px; font-weight: 700; letter-spacing: -1px; line-height: 1; }
-    .metric-value.green { color: var(--green); }
-    .metric-value.amber { color: var(--amber); }
-    .metric-sub { font-size: 12px; color: var(--muted); margin-top: 8px; }
-    .up { color: var(--green); }
+    .pending-banner { background:var(--amber-bg); border:1px solid rgba(239,159,39,0.25); border-radius:var(--radius); padding:18px 20px; margin-bottom:24px; display:none; }
+    .pending-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+    .pending-title { font-size:13px; font-weight:600; color:var(--amber); display:flex; align-items:center; gap:7px; }
+    .pending-count-badge { font-size:11px; font-weight:600; background:var(--amber); color:#1a1000; padding:2px 9px; border-radius:12px; }
+    .pending-row { display:flex; align-items:center; gap:12px; background:rgba(255,255,255,0.04); border:1px solid rgba(239,159,39,0.18); border-radius:var(--radius-sm); padding:10px 14px; margin-bottom:8px; }
+    .pending-row:last-child { margin-bottom:0; }
+    .risk-pill { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; padding:3px 8px; border-radius:4px; flex-shrink:0; }
+    .rp-critical { background:rgba(226,75,74,0.2);  color:#f0706f; }
+    .rp-high     { background:rgba(215,90,48,0.2);  color:#e07050; }
+    .rp-medium   { background:rgba(239,159,39,0.2); color:#efb040; }
+    .rp-low      { background:rgba(29,158,117,0.2); color:var(--green); }
+    .pending-sql  { font-family:'SF Mono','Fira Code',monospace; font-size:12px; flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .pending-meta { font-size:11px; color:var(--muted); flex-shrink:0; }
+    .btn-group { display:flex; gap:6px; flex-shrink:0; }
+    .btn { font-size:12px; font-weight:500; padding:5px 13px; border-radius:var(--radius-sm); border:1px solid; cursor:pointer; background:transparent; transition:all 0.15s; }
+    .btn-approve { border-color:var(--green); color:var(--green); }
+    .btn-approve:hover { background:var(--green-bg); }
+    .btn-reject  { border-color:var(--red); color:var(--red); }
+    .btn-reject:hover  { background:var(--red-bg); }
 
-    /* ── Pending banner ── */
-    .pending-banner {
-      background: var(--amber-bg); border: 1px solid rgba(239,159,39,0.25);
-      border-radius: var(--radius); padding: 18px 20px; margin-bottom: 24px;
-    }
-    .pending-head {
-      display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;
-    }
-    .pending-title { font-size: 13px; font-weight: 600; color: var(--amber); display: flex; align-items: center; gap: 7px; }
-    .pending-count { font-size: 11px; font-weight: 600; background: var(--amber); color: #1a1000; padding: 2px 9px; border-radius: 12px; }
-    .pending-row {
-      display: flex; align-items: center; gap: 12px;
-      background: rgba(255,255,255,0.04); border: 1px solid rgba(239,159,39,0.18);
-      border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 8px;
-    }
-    .pending-row:last-child { margin-bottom: 0; }
-    .risk-pill {
-      font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
-      padding: 3px 8px; border-radius: 4px; flex-shrink: 0;
-    }
-    .rp-critical { background: rgba(226,75,74,0.2); color: #f0706f; }
-    .rp-high     { background: rgba(215,90,48,0.2); color: #e07050; }
-    .rp-medium   { background: rgba(239,159,39,0.2); color: #efb040; }
-    .rp-low      { background: rgba(29,158,117,0.2); color: var(--green); }
-    .pending-sql { font-family: 'SF Mono','Fira Code',monospace; font-size: 12px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .pending-meta { font-size: 11px; color: var(--muted); flex-shrink: 0; }
-    .btn-group { display: flex; gap: 6px; flex-shrink: 0; }
-    .btn {
-      font-size: 12px; font-weight: 500; padding: 5px 13px; border-radius: var(--radius-sm);
-      border: 1px solid; cursor: pointer; background: transparent; transition: all 0.15s;
-    }
-    .btn-approve { border-color: var(--green); color: var(--green); }
-    .btn-approve:hover { background: var(--green-bg); }
-    .btn-reject  { border-color: var(--red); color: var(--red); }
-    .btn-reject:hover  { background: var(--red-bg); }
+    .panic-strip { display:flex; align-items:center; justify-content:space-between; background:rgba(226,75,74,0.08); border:1px solid rgba(226,75,74,0.2); border-radius:var(--radius); padding:14px 20px; margin-bottom:24px; }
+    .panic-label { font-size:13px; color:var(--muted); }
+    .panic-label strong { color:var(--text); }
+    .panic-btn { font-size:13px; font-weight:600; padding:8px 20px; background:transparent; border:1px solid var(--red); color:var(--red); border-radius:var(--radius-sm); cursor:pointer; transition:all 0.15s; }
+    .panic-btn:hover { background:var(--red-bg); }
 
-    /* ── Two-col grid ── */
-    .grid-2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; margin-bottom: 24px; }
-    @media (max-width: 860px) { .grid-2 { grid-template-columns: 1fr; } }
+    .grid-2 { display:grid; grid-template-columns:1.4fr 1fr; gap:18px; margin-bottom:24px; }
+    @media(max-width:860px){.grid-2{grid-template-columns:1fr;}}
 
-    /* ── Card ── */
-    .card {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 20px;
-    }
-    .card-title {
-      font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em;
-      color: var(--muted); font-weight: 600; margin-bottom: 16px;
-    }
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:20px; }
+    .card-title { font-size:11px; text-transform:uppercase; letter-spacing:0.07em; color:var(--muted); font-weight:600; margin-bottom:16px; }
 
-    /* ── Activity feed ── */
-    .feed { display: flex; flex-direction: column; gap: 8px; }
-    .feed-item {
-      display: flex; align-items: flex-start; gap: 10px;
-      padding: 10px 12px; border-radius: var(--radius-sm);
-      border: 1px solid var(--border); border-left-width: 3px;
-    }
-    .fi-approved { border-left-color: var(--green); }
-    .fi-rejected { border-left-color: var(--red); }
-    .fi-running  { border-left-color: var(--blue); }
-    .fi-pending  { border-left-color: var(--amber); }
-    .feed-body { flex: 1; min-width: 0; }
-    .feed-sql  { font-family: 'SF Mono','Fira Code',monospace; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .feed-meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
-    .status-chip { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; padding: 2px 8px; border-radius: 4px; flex-shrink: 0; margin-top: 2px; }
-    .sc-approved { background: rgba(29,158,117,0.15); color: var(--green); }
-    .sc-rejected { background: rgba(226,75,74,0.15); color: var(--red); }
-    .sc-running  { background: rgba(55,138,221,0.15); color: var(--blue); }
-    .sc-pending  { background: rgba(239,159,39,0.15); color: var(--amber); }
+    .feed { display:flex; flex-direction:column; gap:8px; }
+    .feed-item { display:flex; align-items:flex-start; gap:10px; padding:10px 12px; border-radius:var(--radius-sm); border:1px solid var(--border); border-left-width:3px; }
+    .fi-approved { border-left-color:var(--green); }
+    .fi-rejected,.fi-failed { border-left-color:var(--red); }
+    .fi-running  { border-left-color:var(--blue); }
+    .fi-pending  { border-left-color:var(--amber); }
+    .feed-body { flex:1; min-width:0; }
+    .feed-sql  { font-family:'SF Mono','Fira Code',monospace; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .feed-meta { font-size:11px; color:var(--muted); margin-top:3px; }
+    .status-chip { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; padding:2px 8px; border-radius:4px; flex-shrink:0; margin-top:2px; }
+    .sc-approved { background:rgba(29,158,117,0.15); color:var(--green); }
+    .sc-rejected,.sc-failed { background:rgba(226,75,74,0.15); color:var(--red); }
+    .sc-running  { background:rgba(55,138,221,0.15); color:var(--blue); }
+    .sc-pending  { background:rgba(239,159,39,0.15); color:var(--amber); }
 
-    /* ── Right column ── */
-    .right-col { display: flex; flex-direction: column; gap: 18px; }
+    .right-col { display:flex; flex-direction:column; gap:18px; }
 
-    /* ── Risk bars ── */
-    .risk-rows { display: flex; flex-direction: column; gap: 11px; }
-    .risk-row  { display: flex; align-items: center; gap: 10px; }
-    .risk-lbl  { font-size: 12px; color: var(--muted); width: 56px; flex-shrink: 0; }
-    .risk-track{ flex: 1; background: var(--surface2); border-radius: 4px; height: 8px; overflow: hidden; }
-    .risk-fill { height: 100%; border-radius: 4px; }
-    .rf-low      { background: var(--green); }
-    .rf-medium   { background: var(--amber); }
-    .rf-high     { background: #D85A30; }
-    .rf-critical { background: var(--red); }
-    .risk-n    { font-size: 12px; font-weight: 600; color: var(--text); width: 22px; text-align: right; }
+    .risk-rows { display:flex; flex-direction:column; gap:11px; }
+    .risk-row  { display:flex; align-items:center; gap:10px; }
+    .risk-lbl  { font-size:12px; color:var(--muted); width:56px; flex-shrink:0; }
+    .risk-track{ flex:1; background:var(--surface2); border-radius:4px; height:8px; overflow:hidden; }
+    .risk-fill { height:100%; border-radius:4px; transition:width 0.6s ease; }
+    .rf-low      { background:var(--green); }
+    .rf-medium   { background:var(--amber); }
+    .rf-high     { background:#D85A30; }
+    .rf-critical { background:var(--red); }
+    .risk-n { font-size:12px; font-weight:600; color:var(--text); width:22px; text-align:right; }
 
-    /* ── Team leaderboard ── */
-    .team-rows { display: flex; flex-direction: column; gap: 10px; }
-    .team-row  { display: flex; align-items: center; gap: 10px; }
-    .avi {
-      width: 28px; height: 28px; border-radius: 50%; display: flex;
-      align-items: center; justify-content: center; font-size: 11px; font-weight: 700;
-      flex-shrink: 0;
-    }
-    .team-name { font-size: 13px; flex: 1; }
-    .team-bar-wrap { width: 70px; background: var(--surface2); border-radius: 4px; height: 6px; overflow: hidden; }
-    .team-bar { height: 100%; background: var(--green); border-radius: 4px; }
-    .team-n   { font-size: 12px; color: var(--muted); width: 44px; text-align: right; }
+    .team-rows { display:flex; flex-direction:column; gap:10px; }
+    .team-row  { display:flex; align-items:center; gap:10px; }
+    .avi { width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; flex-shrink:0; }
+    .team-name { font-size:13px; flex:1; }
+    .team-bar-wrap { width:70px; background:var(--surface2); border-radius:4px; height:6px; overflow:hidden; }
+    .team-bar { height:100%; background:var(--green); border-radius:4px; transition:width 0.6s ease; }
+    .team-n { font-size:12px; color:var(--muted); width:44px; text-align:right; }
 
-    /* ── Activity chart ── */
-    .chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 24px; }
-    .chart-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-    .chart-legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); }
-    .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
-    .chart-wrap { position: relative; width: 100%; height: 200px; }
+    .chart-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:20px; margin-bottom:24px; }
+    .chart-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+    .chart-legend { display:flex; gap:16px; font-size:12px; color:var(--muted); }
+    .legend-dot { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; }
+    .chart-wrap { position:relative; width:100%; height:200px; }
 
-    /* ── Footer ── */
-    .footer { text-align: center; font-size: 12px; color: var(--faint); margin-top: 24px; }
-    .footer a { color: var(--muted); text-decoration: none; }
-    .footer a:hover { color: var(--text); }
+    .empty { font-size:13px; color:var(--muted); font-style:italic; padding:4px 0; }
 
-    /* ── Panic button ── */
-    .panic-strip {
-      display: flex; align-items: center; justify-content: space-between;
-      background: rgba(226,75,74,0.08); border: 1px solid rgba(226,75,74,0.2);
-      border-radius: var(--radius); padding: 14px 20px; margin-bottom: 24px;
-    }
-    .panic-label { font-size: 13px; color: var(--muted); }
-    .panic-label strong { color: var(--text); }
-    .panic-btn {
-      font-size: 13px; font-weight: 600; padding: 8px 20px;
-      background: transparent; border: 1px solid var(--red); color: var(--red);
-      border-radius: var(--radius-sm); cursor: pointer; transition: all 0.15s;
-    }
-    .panic-btn:hover { background: var(--red-bg); }
-    .panic-btn:active { transform: scale(0.97); }
+    .footer { text-align:center; font-size:12px; color:var(--faint); margin-top:24px; }
+    .footer a { color:var(--muted); text-decoration:none; }
+    .footer a:hover { color:var(--text); }
   </style>
 </head>
 <body>
 <div class="shell">
 
-  <!-- Header -->
   <header class="header">
     <div class="logo">
       <div class="logo-mark">
@@ -236,38 +157,38 @@
     <div class="header-right">
       <span class="live"><span class="dot"></span>Live</span>
       <span class="sep">|</span>
-      <span class="conn-pill" id="conn-name">production-db</span>
+      <span class="conn-pill" id="conn-name">connecting...</span>
       <span class="sep">|</span>
       <span id="clock">--:--:--</span>
     </div>
   </header>
 
-  <!-- Metrics -->
+  <div class="error-banner" id="error-banner"></div>
+
   <div class="metrics">
     <div class="metric">
-      <div class="metric-label">Migrations today</div>
-      <div class="metric-value" id="m-total">14</div>
-      <div class="metric-sub"><span class="up">↑ 3</span> from yesterday</div>
+      <div class="metric-label">Migrations run</div>
+      <div class="metric-value" id="m-total">—</div>
+      <div class="metric-sub" id="m-total-sub">loading...</div>
     </div>
     <div class="metric">
       <div class="metric-label">Pending approval</div>
-      <div class="metric-value amber" id="m-pending">2</div>
+      <div class="metric-value amber" id="m-pending">—</div>
       <div class="metric-sub">waiting on review</div>
     </div>
     <div class="metric">
       <div class="metric-label">Avg risk score</div>
-      <div class="metric-value" id="m-risk">28</div>
-      <div class="metric-sub">medium range</div>
+      <div class="metric-value" id="m-risk">—</div>
+      <div class="metric-sub" id="m-risk-sub">/100</div>
     </div>
     <div class="metric">
-      <div class="metric-label">Queries run</div>
-      <div class="metric-value green" id="m-queries">47</div>
-      <div class="metric-sub"><span class="up">100%</span> success rate</div>
+      <div class="metric-label">Success rate</div>
+      <div class="metric-value green" id="m-success">—</div>
+      <div class="metric-sub" id="m-success-sub">loading...</div>
     </div>
   </div>
 
-  <!-- Pending approvals banner -->
-  <div class="pending-banner">
+  <div class="pending-banner" id="pending-banner">
     <div class="pending-head">
       <div class="pending-title">
         <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
@@ -276,141 +197,60 @@
         </svg>
         Awaiting approval
       </div>
-      <span class="pending-count">2 pending</span>
+      <span class="pending-count-badge" id="pending-count-badge">0 pending</span>
     </div>
-    <div class="pending-row">
-      <span class="risk-pill rp-critical">Critical</span>
-      <span class="pending-sql">DROP COLUMN legacy_user_id FROM transactions</span>
-      <span class="pending-meta">Score 82 · @sarah · 4 min ago</span>
-      <div class="btn-group">
-        <button class="btn btn-approve" onclick="approveMig(this)">Approve</button>
-        <button class="btn btn-reject"  onclick="rejectMig(this)">Reject</button>
-      </div>
-    </div>
-    <div class="pending-row">
-      <span class="risk-pill rp-high">High</span>
-      <span class="pending-sql">ALTER TABLE orders ADD COLUMN discount_pct DECIMAL(5,2) DEFAULT 0</span>
-      <span class="pending-meta">Score 61 · @marcus · 12 min ago</span>
-      <div class="btn-group">
-        <button class="btn btn-approve" onclick="approveMig(this)">Approve</button>
-        <button class="btn btn-reject"  onclick="rejectMig(this)">Reject</button>
-      </div>
-    </div>
+    <div id="pending-rows"></div>
   </div>
 
-  <!-- Panic strip -->
   <div class="panic-strip">
-    <div class="panic-label"><strong>Emergency rollback</strong> — run <code>/db panic</code> in Slack, or trigger here if something just broke.</div>
+    <div class="panic-label"><strong>Emergency rollback</strong> — run <code>/db panic</code> in Slack if something just broke.</div>
     <button class="panic-btn" onclick="triggerPanic()">🔴 Panic Rollback</button>
   </div>
 
-  <!-- Main 2-col grid -->
   <div class="grid-2">
-    <!-- Activity feed -->
     <div class="card">
       <div class="card-title">Recent activity</div>
-      <div class="feed">
-        <div class="feed-item fi-approved">
-          <div class="feed-body">
-            <div class="feed-sql">CREATE INDEX idx_users_email ON users(email)</div>
-            <div class="feed-meta">@james · 2 min ago · risk: low (12) · approved by @lead</div>
-          </div>
-          <span class="status-chip sc-approved">approved</span>
-        </div>
-        <div class="feed-item fi-running">
-          <div class="feed-body">
-            <div class="feed-sql">ALTER TABLE products ADD COLUMN tags JSONB</div>
-            <div class="feed-meta">@priya · 8 min ago · risk: medium (34)</div>
-          </div>
-          <span class="status-chip sc-running">running</span>
-        </div>
-        <div class="feed-item fi-approved">
-          <div class="feed-body">
-            <div class="feed-sql">CREATE TABLE feature_flags (id UUID PRIMARY KEY, name TEXT...)</div>
-            <div class="feed-meta">@marcus · 21 min ago · risk: low (8)</div>
-          </div>
-          <span class="status-chip sc-approved">approved</span>
-        </div>
-        <div class="feed-item fi-rejected">
-          <div class="feed-body">
-            <div class="feed-sql">TRUNCATE TABLE sessions</div>
-            <div class="feed-meta">@sarah · 45 min ago · risk: critical (91) · blocked by AutoDB</div>
-          </div>
-          <span class="status-chip sc-rejected">rejected</span>
-        </div>
-        <div class="feed-item fi-approved">
-          <div class="feed-body">
-            <div class="feed-sql">ALTER TABLE users ADD COLUMN last_login TIMESTAMPTZ</div>
-            <div class="feed-meta">@james · 1 hr ago · risk: low (19)</div>
-          </div>
-          <span class="status-chip sc-approved">approved</span>
-        </div>
+      <div class="feed" id="feed">
+        <div class="empty">Loading activity...</div>
       </div>
     </div>
 
-    <!-- Right column -->
     <div class="right-col">
-      <!-- Risk distribution -->
       <div class="card">
-        <div class="card-title">Risk distribution — today</div>
+        <div class="card-title">Risk distribution — all time</div>
         <div class="risk-rows">
           <div class="risk-row">
             <span class="risk-lbl">Low</span>
-            <div class="risk-track"><div class="risk-fill rf-low" style="width:64%"></div></div>
-            <span class="risk-n">9</span>
+            <div class="risk-track"><div class="risk-fill rf-low"      id="bar-low"      style="width:0%"></div></div>
+            <span class="risk-n" id="rn-low">0</span>
           </div>
           <div class="risk-row">
             <span class="risk-lbl">Medium</span>
-            <div class="risk-track"><div class="risk-fill rf-medium" style="width:21%"></div></div>
-            <span class="risk-n">3</span>
+            <div class="risk-track"><div class="risk-fill rf-medium"   id="bar-medium"   style="width:0%"></div></div>
+            <span class="risk-n" id="rn-medium">0</span>
           </div>
           <div class="risk-row">
             <span class="risk-lbl">High</span>
-            <div class="risk-track"><div class="risk-fill rf-high" style="width:14%"></div></div>
-            <span class="risk-n">2</span>
+            <div class="risk-track"><div class="risk-fill rf-high"     id="bar-high"     style="width:0%"></div></div>
+            <span class="risk-n" id="rn-high">0</span>
           </div>
           <div class="risk-row">
             <span class="risk-lbl">Critical</span>
-            <div class="risk-track"><div class="risk-fill rf-critical" style="width:7%"></div></div>
-            <span class="risk-n">1</span>
+            <div class="risk-track"><div class="risk-fill rf-critical" id="bar-critical" style="width:0%"></div></div>
+            <span class="risk-n" id="rn-critical">0</span>
           </div>
         </div>
       </div>
 
-      <!-- Team leaderboard -->
       <div class="card">
         <div class="card-title">Team leaderboard</div>
-        <div class="team-rows">
-          <div class="team-row">
-            <div class="avi" style="background:rgba(29,158,117,0.2);color:var(--green);">JK</div>
-            <span class="team-name">@james</span>
-            <div class="team-bar-wrap"><div class="team-bar" style="width:100%"></div></div>
-            <span class="team-n">6 runs</span>
-          </div>
-          <div class="team-row">
-            <div class="avi" style="background:rgba(55,138,221,0.2);color:var(--blue);">PR</div>
-            <span class="team-name">@priya</span>
-            <div class="team-bar-wrap"><div class="team-bar" style="width:67%"></div></div>
-            <span class="team-n">4 runs</span>
-          </div>
-          <div class="team-row">
-            <div class="avi" style="background:rgba(147,115,235,0.2);color:#b090f5;">MA</div>
-            <span class="team-name">@marcus</span>
-            <div class="team-bar-wrap"><div class="team-bar" style="width:50%"></div></div>
-            <span class="team-n">3 runs</span>
-          </div>
-          <div class="team-row">
-            <div class="avi" style="background:rgba(226,75,74,0.2);color:var(--red);">SL</div>
-            <span class="team-name">@sarah</span>
-            <div class="team-bar-wrap"><div class="team-bar" style="width:17%"></div></div>
-            <span class="team-n">1 run</span>
-          </div>
+        <div class="team-rows" id="team-rows">
+          <div class="empty">Loading team stats...</div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Activity chart -->
   <div class="chart-card">
     <div class="chart-header">
       <div class="card-title" style="margin-bottom:0">Migration activity — last 7 days</div>
@@ -420,93 +260,199 @@
       </div>
     </div>
     <div class="chart-wrap">
-      <canvas id="actChart" role="img" aria-label="Stacked bar chart showing daily approved and rejected migrations over 7 days">
-        Mon 2 approved, Tue 4 approved 1 rejected, Wed 2 approved 1 rejected, Thu 6 approved 1 rejected, Fri 7 approved 2 rejected, Sat 3 approved 1 rejected, Today 11 approved 3 rejected.
-      </canvas>
+      <canvas id="actChart" role="img" aria-label="Stacked bar chart of daily migrations"></canvas>
     </div>
   </div>
 
   <div class="footer">
-    SlackDB · Built for AutoDB Hackathon · <a href="https://github.com/AayushP123/slackdb" target="_blank">GitHub</a> · <a href="https://docs.autodb.app" target="_blank">AutoDB Docs</a>
+    SlackDB · Built for AutoDB Hackathon ·
+    <a href="https://github.com/AayushP123/slackdb" target="_blank">GitHub</a> ·
+    <a href="https://docs.autodb.app" target="_blank">AutoDB Docs</a>
   </div>
 </div>
 
 <script>
+  const API_BASE = 'https://web-production-64fd8.up.railway.app';
+
   /* Clock */
-  function tick() {
-    document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+  function tick() { document.getElementById('clock').textContent = new Date().toLocaleTimeString(); }
+  tick(); setInterval(tick, 1000);
+
+  /* Helpers */
+  function esc(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
-  tick();
-  setInterval(tick, 1000);
+  function showErr(msg) {
+    const el = document.getElementById('error-banner');
+    el.textContent = '⚠️ ' + msg; el.style.display = 'block';
+  }
+  function hideErr() { document.getElementById('error-banner').style.display = 'none'; }
 
-  /* Read conn from query string ?conn=your-db-name */
-  const urlConn = new URLSearchParams(location.search).get('conn');
-  if (urlConn) document.getElementById('conn-name').textContent = urlConn;
+  /* Metrics */
+  function renderMetrics(d) {
+    const total    = d.total            ?? 0;
+    const approved = d.approved         ?? 0;
+    const rejected = d.rejected         ?? 0;
+    const pending  = d.pending_approvals ?? 0;
+    const avg      = d.avg_risk         ?? 0;
+    const pct      = total > 0 ? Math.round(approved / total * 100) : 0;
 
-  /* Fetch live data from /audit endpoint and update metrics */
-  async function fetchStats() {
+    document.getElementById('m-total').textContent     = total;
+    document.getElementById('m-total-sub').innerHTML   = `<span class="up">${approved} approved</span>, ${rejected} rejected`;
+    document.getElementById('m-pending').textContent   = pending;
+    document.getElementById('m-risk').textContent      = avg;
+    document.getElementById('m-success').textContent   = pct + '%';
+    document.getElementById('m-success-sub').textContent = total + ' total migrations';
+
+    const rEl = document.getElementById('m-risk');
+    rEl.style.color = avg >= 75 ? 'var(--red)' : avg >= 50 ? '#D85A30' : avg >= 25 ? 'var(--amber)' : 'var(--green)';
+  }
+
+  /* Risk bars */
+  function renderRiskBars(dist) {
+    const total = Object.values(dist).reduce((a,b) => a+b, 0) || 1;
+    ['low','medium','high','critical'].forEach(cat => {
+      const n   = dist[cat] ?? 0;
+      const pct = Math.round(n / total * 100);
+      const bar = document.getElementById('bar-' + cat);
+      const lbl = document.getElementById('rn-'  + cat);
+      if (bar) bar.style.width = pct + '%';
+      if (lbl) lbl.textContent = n;
+    });
+  }
+
+  /* Team */
+  const AVI_COLORS = [
+    ['rgba(29,158,117,0.2)','var(--green)'],
+    ['rgba(55,138,221,0.2)','var(--blue)'],
+    ['rgba(147,115,235,0.2)','#b090f5'],
+    ['rgba(226,75,74,0.2)','var(--red)'],
+  ];
+  function renderTeam(stats) {
+    const wrap = document.getElementById('team-rows');
+    if (!stats?.length) { wrap.innerHTML = '<div class="empty">No migrations run yet.</div>'; return; }
+    const max = stats[0].runs;
+    wrap.innerHTML = stats.slice(0,4).map((m,i) => {
+      const [bg,fg] = AVI_COLORS[i % 4];
+      const pct = Math.round(m.runs / max * 100);
+      return `<div class="team-row">
+        <div class="avi" style="background:${bg};color:${fg}">${esc(m.user_id.slice(0,2).toUpperCase())}</div>
+        <span class="team-name">@${esc(m.user_id)}</span>
+        <div class="team-bar-wrap"><div class="team-bar" style="width:${pct}%"></div></div>
+        <span class="team-n">${m.runs} run${m.runs!==1?'s':''}</span>
+      </div>`;
+    }).join('');
+  }
+
+  /* Feed */
+  const SC = { approved:['fi-approved','sc-approved'], rejected:['fi-rejected','sc-rejected'],
+               failed:['fi-failed','sc-failed'], running:['fi-running','sc-running'], pending:['fi-pending','sc-pending'] };
+  function renderFeed(logs) {
+    const wrap = document.getElementById('feed');
+    if (!logs?.length) { wrap.innerHTML = '<div class="empty">No migrations yet — try /db analyze in Slack.</div>'; return; }
+    wrap.innerHTML = logs.map(l => {
+      const [fc,sc] = SC[l.status] || ['fi-pending','sc-pending'];
+      return `<div class="feed-item ${fc}">
+        <div class="feed-body">
+          <div class="feed-sql">${esc((l.sql||'').slice(0,90))}</div>
+          <div class="feed-meta">@${esc(l.actor)} · ${esc(l.time)} · risk: ${esc(l.risk)} (${l.score??0})</div>
+        </div>
+        <span class="status-chip ${sc}">${esc(l.status)}</span>
+      </div>`;
+    }).join('');
+  }
+
+  /* Pending */
+  const RP = { low:'rp-low', medium:'rp-medium', high:'rp-high', critical:'rp-critical' };
+  function renderPending(items) {
+    const banner = document.getElementById('pending-banner');
+    const badge  = document.getElementById('pending-count-badge');
+    const wrap   = document.getElementById('pending-rows');
+    if (!items?.length) { banner.style.display='none'; return; }
+    banner.style.display = 'block';
+    badge.textContent    = items.length + ' pending';
+    wrap.innerHTML = items.map(item => `
+      <div class="pending-row" id="pr-${esc(item.token)}">
+        <span class="risk-pill ${RP[item.risk]||'rp-medium'}">${esc(item.risk)}</span>
+        <span class="pending-sql">${esc((item.sql||'').slice(0,80))}</span>
+        <span class="pending-meta">Score ${item.score} · @${esc(item.user_id)}</span>
+        <div class="btn-group">
+          <button class="btn btn-approve" onclick="approveMig(this,'${esc(item.token)}')">Approve</button>
+          <button class="btn btn-reject"  onclick="rejectMig(this,'${esc(item.token)}')">Reject</button>
+        </div>
+      </div>`).join('');
+  }
+
+  /* Chart */
+  let chart = null;
+  function renderChart(daily) {
+    if (!daily?.length) return;
+    const labels   = daily.map(d => new Date(d.date+'T12:00:00').toLocaleDateString('en-US',{weekday:'short'}));
+    const approved = daily.map(d => d.approved);
+    const rejected = daily.map(d => d.rejected);
+    if (chart) {
+      chart.data.labels=labels; chart.data.datasets[0].data=approved; chart.data.datasets[1].data=rejected;
+      chart.update(); return;
+    }
+    chart = new Chart(document.getElementById('actChart'), {
+      type:'bar',
+      data:{ labels, datasets:[
+        {label:'Approved',data:approved,backgroundColor:'#1D9E75',borderRadius:4,borderSkipped:false},
+        {label:'Rejected',data:rejected,backgroundColor:'#E24B4A',borderRadius:4,borderSkipped:false},
+      ]},
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{display:false}, tooltip:{backgroundColor:'#22263a',borderColor:'rgba(255,255,255,0.1)',borderWidth:1,titleColor:'#e8eaf0',bodyColor:'#7a7f99'} },
+        scales:{
+          x:{stacked:true,grid:{display:false},ticks:{color:'#7a7f99',font:{size:12}},border:{display:false}},
+          y:{stacked:true,beginAtZero:true,grid:{color:'rgba(255,255,255,0.05)'},ticks:{color:'#7a7f99',font:{size:11},precision:0},border:{display:false}}
+        }
+      }
+    });
+  }
+
+  /* Main refresh loop */
+  async function refresh() {
     try {
-      const r = await fetch('/audit');
-      if (!r.ok) return;
+      const r = await fetch(API_BASE + '/audit', {mode:'cors'});
+      if (!r.ok) { showErr(`Bot API returned ${r.status}. Check Railway logs.`); return; }
+      hideErr();
       const d = await r.json();
-      document.getElementById('m-total').textContent   = d.total   ?? '--';
-      document.getElementById('m-pending').textContent = d.pending_approvals ?? '--';
-      document.getElementById('m-risk').textContent    = d.avg_risk ?? '--';
-    } catch (e) { /* server might not be running in demo mode */ }
+      renderMetrics(d);
+      renderRiskBars(d.risk_distribution || {});
+      renderTeam(d.team_stats            || []);
+      renderFeed(d.recent_logs           || d.logs || []);
+      renderPending(d.pending_items      || []);
+      renderChart(d.daily_activity       || []);
+      document.getElementById('conn-name').textContent = 'production-db';
+    } catch(e) {
+      showErr('Cannot reach bot API: ' + e.message);
+    }
   }
-  fetchStats();
-  setInterval(fetchStats, 10000);
 
-  /* Approve / reject button handlers (visual only — real action happens in Slack) */
-  function approveMig(btn) {
-    const row = btn.closest('.pending-row');
-    row.style.borderColor = 'rgba(29,158,117,0.35)';
-    btn.textContent = '✓ Approved';
-    btn.style.background = 'rgba(29,158,117,0.15)';
-    btn.disabled = true;
-    row.querySelector('.btn-reject').disabled = true;
-    const pending = document.getElementById('m-pending');
-    pending.textContent = Math.max(0, parseInt(pending.textContent) - 1);
+  refresh();
+  setInterval(refresh, 10000);
+
+  /* Button handlers (visual only — actual action happens in Slack) */
+  function approveMig(btn, token) {
+    const row = document.getElementById('pr-'+token);
+    if (row) row.style.borderColor='rgba(29,158,117,0.35)';
+    btn.textContent='✓ Approved'; btn.style.background='rgba(29,158,117,0.15)'; btn.disabled=true;
+    btn.closest('.btn-group').querySelector('.btn-reject').disabled=true;
+    const b=document.getElementById('pending-count-badge');
+    if(b) b.textContent=Math.max(0,parseInt(b.textContent)-1)+' pending';
   }
-  function rejectMig(btn) {
-    const row = btn.closest('.pending-row');
-    row.style.borderColor = 'rgba(226,75,74,0.35)';
-    btn.textContent = '✕ Rejected';
-    btn.style.background = 'rgba(226,75,74,0.15)';
-    btn.disabled = true;
-    row.querySelector('.btn-approve').disabled = true;
-    const pending = document.getElementById('m-pending');
-    pending.textContent = Math.max(0, parseInt(pending.textContent) - 1);
+  function rejectMig(btn, token) {
+    const row = document.getElementById('pr-'+token);
+    if (row) row.style.borderColor='rgba(226,75,74,0.35)';
+    btn.textContent='✕ Rejected'; btn.style.background='rgba(226,75,74,0.15)'; btn.disabled=true;
+    btn.closest('.btn-group').querySelector('.btn-approve').disabled=true;
+    const b=document.getElementById('pending-count-badge');
+    if(b) b.textContent=Math.max(0,parseInt(b.textContent)-1)+' pending';
   }
   function triggerPanic() {
-    if (confirm('⚠️  This will execute an emergency rollback of the most recent reversible migration.\n\nIn production, run /db panic in Slack for full team visibility.\n\nProceed?')) {
-      alert('🔴 Panic rollback triggered! Check your #db-alerts Slack channel for status.');
-    }
+    alert('Use /db panic in Slack for full team visibility and an audit trail.\n\nThe dashboard is read-only.');
   }
-
-  /* Activity chart */
-  new Chart(document.getElementById('actChart'), {
-    type: 'bar',
-    data: {
-      labels: ['Mon','Tue','Wed','Thu','Fri','Sat','Today'],
-      datasets: [
-        { label: 'Approved', data: [2,4,2,6,7,3,11], backgroundColor: '#1D9E75', borderRadius: 4, borderSkipped: false },
-        { label: 'Rejected', data: [0,1,1,1,2,1,3],  backgroundColor: '#E24B4A', borderRadius: 4, borderSkipped: false },
-      ]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: {
-        backgroundColor: '#22263a', borderColor: 'rgba(255,255,255,0.1)', borderWidth: 1,
-        titleColor: '#e8eaf0', bodyColor: '#7a7f99',
-      }},
-      scales: {
-        x: { stacked: true, grid: { display: false }, ticks: { color: '#7a7f99', font: { size: 12 } }, border: { display: false } },
-        y: { stacked: true, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#7a7f99', font: { size: 11 }, stepSize: 5 }, border: { display: false } },
-      }
-    }
-  });
 </script>
 </body>
 </html>
