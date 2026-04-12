@@ -4,7 +4,20 @@ Powered by AutoDB
 """
 from dotenv import load_dotenv
 load_dotenv()
+import ssl
+import certifi
+import aiohttp
 
+# Fix aiohttp SSL on Mac
+ssl_context = ssl.create_default_context(cafile=certifi.where())
+
+async def _patched_connector():
+    return aiohttp.TCPConnector(ssl=ssl_context)
+
+aiohttp.ClientSession.__init__.__defaults__
+import ssl
+import certifi
+ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=certifi.where())
 import os
 import json
 import asyncio
@@ -86,8 +99,8 @@ def format_risk_card(data: Dict, needs_second: bool = False) -> List[Dict]:
     category = data.get("risk_category", "unknown")
     token    = data.get("approval_token", "none")
     emoji    = RISK_EMOJI.get(category, "⚪")
-    sandbox  = data.get("sandbox_result", {}).get("passed", False)
-    irreversible = data.get("rollback_plan", {}).get("has_irreversible", False)
+    sandbox  = (data.get("sandbox_result") or {}).get("passed", False)
+    irreversible = (data.get("rollback_plan") or {}).get("has_irreversible", False)
     affected = data.get("affected_tables", [])
     sql      = data.get("sql", "")[:120]
 
@@ -109,7 +122,7 @@ def format_risk_card(data: Dict, needs_second: bool = False) -> List[Dict]:
         {"type": "header", "text": {"type": "plain_text", "text": f"{emoji} Migration Risk: {category.upper()} ({score}/100)"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": (
             f"*SQL:*\n```{sql}```\n"
-            f"*Affected tables:* {', '.join(affected) if affected else 'none detected'}\n"
+            f"*Affected tables:* {', '.join(t['table'] for t in affected) if affected else 'none detected'}\n"
             f"*Sandbox:* {'✅ Passed' if sandbox else '❌ Failed'}   "
             f"*Rollback:* {'⚠️ Irreversible' if irreversible else '✅ Available'}"
             f"{warning}"
@@ -249,6 +262,7 @@ async def cmd_analyze(client, chan, user_id, sql, db):
     msg = await client.chat_postMessage(channel=chan, text="🔄 Running AutoDB risk analysis...")
     try:
         r = await db.analyze_migration(conn, sql)
+        print("DEBUG analyze response:", r)        
         if not r.get("success"):
             await client.chat_update(channel=chan, ts=msg["ts"], text=f"❌ Analysis failed: {r.get('error', r)}")
             return
@@ -463,15 +477,6 @@ async def _poll_status(client, chan, thread_ts, request_id, db: AutoDBClient):
 
 # ── FastAPI routes ─────────────────────────────────────────────────────────────
 
-from fastapi.middleware.cors import CORSMiddleware
-
-api.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET"],
-    allow_headers=["*"],
-)
-
 @api.post("/slack/events")
 async def slack_events(request: Request):
     return await handler.handle(request)
@@ -482,18 +487,6 @@ async def health():
     return {"status": "healthy", "autodb_key": bool(AUTODB_API_KEY),
             "approver_set": bool(APPROVER_SLACK_ID), "migrations_run": len(audit_log),
             "pending_approvals": sum(1 for a in approvals.values() if a.get("status") == "pending")}
-
-
-@api.get("/audit")
-async def get_audit():
-    return {
-        "logs": audit_log,
-        "pending_approvals": sum(1 for a in approvals.values() if a.get("status") == "pending"),
-        "total": len(audit_log),
-        "approved": sum(1 for l in audit_log if l.get("status") == "approved"),
-        "rejected": sum(1 for l in audit_log if l.get("status") == "rejected"),
-        "avg_risk": round(sum(l.get("score", 0) for l in audit_log) / len(audit_log)) if audit_log else 0,
-    }
 
 
 if __name__ == "__main__":
