@@ -23,7 +23,7 @@ import httpx
 SLACK_BOT_TOKEN      = os.environ.get("SLACK_BOT_TOKEN")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET")
 AUTODB_API_KEY       = os.environ.get("AUTODB_API_KEY")
-AUTODB_BASE_URL      = "http://api.autodb.app/api/v1"  
+AUTODB_BASE_URL      = "http://api.autodb.app/api/v1"
 
 APPROVER_SLACK_ID   = os.environ.get("APPROVER_SLACK_ID", "")
 HIGH_RISK_THRESHOLD = 50
@@ -55,16 +55,6 @@ class AutoDBClient:
             resp = await c.post(f"{self.base_url}{path}", headers=self._h, json=body)
             print(f"[AutoDB] POST {path} → {resp.status_code}: {resp.text[:300]}")
             return resp.json()
-        
-    async def run_sandbox(self, conn_id, sql):
-        async with httpx.AsyncClient(timeout=120.0) as c:
-            resp = await c.post(
-                f"{self.base_url}/connections/{conn_id}/migrations/sandbox",
-                headers=self._h,
-                json={"sql": sql}
-            )
-            print(f"[AutoDB] POST sandbox → {resp.status_code}: {resp.text[:300]}")
-            return resp.json()
 
     async def list_connections(self):
         return await self._get("/connections")
@@ -95,20 +85,9 @@ def format_risk_card(data: Dict, needs_second: bool = False) -> List[Dict]:
     category     = data.get("risk_category", "unknown")
     token        = data.get("approval_token", "none")
     emoji        = RISK_EMOJI.get(category, "⚪")
-    sandbox_raw  = data.get("sandbox_result")
-    sandbox_ran  = sandbox_raw is not None
-    sandbox_ok   = (sandbox_raw or {}).get("passed", False)
     irreversible = (data.get("rollback_plan") or {}).get("has_irreversible", False)
     affected     = data.get("affected_tables", [])
     sql          = data.get("sql", "")[:120]
-
-    # Sandbox status message
-    if not sandbox_ran:
-        sandbox_text = "⚠️ Unavailable (DB not reachable by AutoDB)"
-    elif sandbox_ok:
-        sandbox_text = "✅ Passed"
-    else:
-        sandbox_text = "❌ Failed"
 
     warning = ""
     if needs_second:
@@ -133,7 +112,6 @@ def format_risk_card(data: Dict, needs_second: bool = False) -> List[Dict]:
         {"type": "section", "text": {"type": "mrkdwn", "text": (
             f"*SQL:*\n```{sql}```\n"
             f"*Affected tables:* {', '.join(t['table'] if isinstance(t, dict) else t for t in affected) if affected else 'none detected'}\n"
-            f"*Sandbox:* {sandbox_text}  "
             f"*Rollback:* {'⚠️ Irreversible' if irreversible else '✅ Available'}"
             f"{warning}"
         )}},
@@ -386,7 +364,7 @@ async def cmd_introspect(client, chan, user_id):
                         f"*Database:* `{conn}`\n"
                         f"*Tables found:* {table_count}\n"
                         f"*Preview:* {preview}\n\n"
-                        f"AutoDB sandbox is ready — migrations will now validate correctly."
+                        f"Ready — run `/db analyze <SQL>` to risk-check a migration."
                     )}}
                 ])
         else:
@@ -493,13 +471,9 @@ async def cmd_analyze(client, chan, user_id, sql, db):
         await client.chat_postMessage(channel=chan, text="Usage: `/db analyze <SQL>`")
         return
 
-    msg = await client.chat_postMessage(channel=chan, text="🔄 Running AutoDB risk analysis & sandbox...")
+    msg = await client.chat_postMessage(channel=chan, text="🔄 Running AutoDB risk analysis...")
     try:
-        # Run both in parallel
-        analysis_task = asyncio.create_task(db.analyze_migration(conn, sql))
-        sandbox_task  = asyncio.create_task(db.run_sandbox(conn, sql))
-        r, sandbox_r  = await asyncio.gather(analysis_task, sandbox_task)
-
+        r = await db.analyze_migration(conn, sql)
         if not r.get("success"):
             await client.chat_update(channel=chan, ts=msg["ts"],
                 text=f"❌ Analysis failed: {r.get('error', r)}")
@@ -509,12 +483,6 @@ async def cmd_analyze(client, chan, user_id, sql, db):
         score        = data.get("risk_score", 0)
         token        = data.get("approval_token")
         needs_second = score >= HIGH_RISK_THRESHOLD
-
-        # Inject sandbox result into data so format_risk_card picks it up
-        if sandbox_r.get("success"):
-            data["sandbox_result"] = sandbox_r.get("data")
-        else:
-            print(f"[Sandbox] failed: {sandbox_r}")
 
         if token:
             approvals[token] = {
@@ -535,6 +503,7 @@ async def cmd_analyze(client, chan, user_id, sql, db):
             ))
     except Exception as e:
         await client.chat_update(channel=chan, ts=msg["ts"], text=f"❌ {e}")
+
 
 async def cmd_optimize(client, chan, user_id, sql, db):
     conn = connections.get(user_id, {}).get("default_connection")
@@ -780,7 +749,6 @@ async def handle_view_details(ack, body, client):
         "risk_score":      d.get("risk_score"),
         "risk_category":   d.get("risk_category"),
         "affected_tables": d.get("affected_tables"),
-        "sandbox_result":  d.get("sandbox_result"),
         "rollback_plan":   d.get("rollback_plan"),
         "warnings":        d.get("warnings", []),
     }, indent=2)
