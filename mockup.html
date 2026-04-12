@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SlackDB - Visual Mockup</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #f8f8f8;
+            padding: 40px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            padding: 24px;
+        }
+        h1 {
+            font-size: 28px;
+            margin-bottom: 8px;
+            color: #1d1c1d;
+        }
+        .subtitle {
+            color: #616061;
+            margin-bottom: 32px;
+            font-size: 14px;
+        }
+        .message {
+            margin-bottom: 24px;
+            padding: 12px;
+            border-left: 4px solid #e0e0e0;
+        }
+        .user {
+            font-weight: 600;
+            color: #1d1c1d;
+            margin-bottom: 4px;
+        }
+        .timestamp {
+            color: #616061;
+            font-size: 12px;
+            margin-left: 8px;
+        }
+        .command {
+            font-family: 'Monaco', 'Courier New', monospace;
+            background: #f8f8f8;
+            padding: 8px 12px;
+            border-radius: 4px;
+            margin: 8px 0;
+            font-size: 14px;
+            color: #e01e5a;
+        }
+        .risk-card {
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            margin: 12px 0;
+            overflow: hidden;
+        }
+        .risk-header {
+            padding: 16px;
+            font-weight: 600;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+        }
+        .risk-header.medium {
+            background: #fff4e6;
+            color: #b45309;
+            border-left: 4px solid #f59e0b;
+        }
+        .risk-header.low {
+            background: #ecfdf5;
+            color: #047857;
+            border-left: 4px solid #10b981;
+        }
+        .risk-body {
+            padding: 16px;
+            background: white;
+        }
+        .risk-field {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 12px;
+        }
+        .field {
+            display: flex;
+            flex-direction: column;
+        }
+        .field-label {
+            font-size: 12px;
+            color: #616061;
+            font-weight: 600;
+            margin-bottom: 4px;
+            text-transform: uppercase;
+        }
+        .field-value {
+            font-size: 14px;
+            color: #1d1c1d;
+        }
+        .code-block {
+            background: #1d1c1d;
+            color: #d4d4d4;
+            padding: 12px;
+            border-radius: 4px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            margin: 8px 0;
+            overflow-x: auto;
+        }
+        .buttons {
+            display: flex;
+            gap: 12px;
+            margin-top: 16px;
+            padding: 16px;
+            background: #f8f8f8;
+            border-top: 1px solid #e0e0e0;
+        }
+        .button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .button-primary {
+            background: #007a5a;
+            color: white;
+        }
+        .button-primary:hover {
+            background: #006844;
+        }
+        .button-danger {
+            background: #e01e5a;
+            color: white;
+        }
+        .button-danger:hover {
+            background: #c91e4c;
+        }
+        .button-secondary {
+            background: white;
+            color: #1d1c1d;
+            border: 1px solid #e0e0e0;
+        }
+        .button-secondary:hover {
+            background: #f8f8f8;
+        }
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 12px 0;
+            font-size: 14px;
+        }
+        .table th {
+            background: #f8f8f8;
+            padding: 8px;
+            text-align: left;
+            font-weight: 600;
+            border-bottom: 2px solid #e0e0e0;
+        }
+        .table td {
+            padding: 8px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        .status.success {
+            background: #ecfdf5;
+            color: #047857;
+        }
+        .status.warning {
+            background: #fff4e6;
+            color: #b45309;
+        }
+        .thread {
+            margin-left: 40px;
+            padding-left: 16px;
+            border-left: 2px solid #e0e0e0;
+            margin-top: 12px;
+        }
+        .thread-message {
+            margin-bottom: 8px;
+            padding: 8px;
+            background: #f8f8f8;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .emoji {
+            font-size: 18px;
+            margin-right: 4px;
+        }
+        .section {
+            margin-bottom: 48px;
+        }
+        .section-title {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #1d1c1d;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SlackDB - Interface Mockup</h1>
+        <p class="subtitle">Visual demonstration of how SlackDB appears in Slack</p>
+
+        <!-- Section 1: Migration Analysis -->
+        <div class="section">
+            <div class="section-title">1. Migration Risk Analysis</div>
+            
+            <div class="message">
+                <div class="user">Sarah Chen <span class="timestamp">11:23 AM</span></div>
+                <div class="command">/db analyze ALTER TABLE orders ADD COLUMN priority VARCHAR(20) DEFAULT 'normal'</div>
+            </div>
+
+            <div class="message">
+                <div class="user">SlackDB <span class="timestamp">11:23 AM</span></div>
+                
+                <div class="risk-card">
+                    <div class="risk-header medium">
+                        <span class="emoji">🟡</span>
+                        Migration Risk: MEDIUM (35/100)
+                    </div>
+                    
+                    <div class="risk-body">
+                        <div class="field">
+                            <div class="field-label">SQL Statement</div>
+                            <div class="code-block">ALTER TABLE orders ADD COLUMN priority VARCHAR(20) DEFAULT 'normal'</div>
+                        </div>
+                        
+                        <div class="risk-field">
+                            <div class="field">
+                                <div class="field-label">Affected Tables</div>
+                                <div class="field-value">2 tables<br><small style="color:#616061">orders (direct), order_items (cascade)</small></div>
+                            </div>
+                            <div class="field">
+                                <div class="field-label">Lock Duration</div>
+                                <div class="field-value">~150ms<br><small style="color:#616061">ACCESS EXCLUSIVE</small></div>
+                            </div>
+                        </div>
+                        
+                        <div class="risk-field">
+                            <div class="field">
+                                <div class="field-label">Sandbox Test</div>
+                                <div class="field-value"><span class="status success">✅ Passed</span></div>
+                            </div>
+                            <div class="field">
+                                <div class="field-label">Rollback Plan</div>
+                                <div class="field-value"><span class="status success">✅ Available</span></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="buttons">
+                        <button class="button button-primary">✅ Approve</button>
+                        <button class="button button-danger">❌ Reject</button>
+                        <button class="button button-secondary">📊 View Details</button>
+                    </div>
+                </div>
+
+                <div class="thread">
+                    <div class="thread-message"><span class="emoji">⏳</span> Migration starting...</div>
+                    <div class="thread-message"><span class="emoji">🔄</span> Executing statement 1 of 1...</div>
+                    <div class="thread-message"><span class="emoji">✅</span> Migration complete (85ms)</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 2: Natural Language Query -->
+        <div class="section">
+            <div class="section-title">2. Natural Language Query</div>
+            
+            <div class="message">
+                <div class="user">Tom Wilson <span class="timestamp">2:15 PM</span></div>
+                <div class="command">/db query Show me the top 10 customers by revenue this month</div>
+            </div>
+
+            <div class="message">
+                <div class="user">SlackDB <span class="timestamp">2:15 PM</span></div>
+                
+                <div style="background:#f8f8f8; padding:16px; border-radius:8px; margin:12px 0;">
+                    <div style="font-weight:600; margin-bottom:12px; color:#1d1c1d;">Query Results</div>
+                    
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Name</th>
+                                <th>Revenue</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>42</td>
+                                <td>Acme Corp</td>
+                                <td>$15,230.00</td>
+                            </tr>
+                            <tr>
+                                <td>17</td>
+                                <td>Globex Inc</td>
+                                <td>$12,100.50</td>
+                            </tr>
+                            <tr>
+                                <td>89</td>
+                                <td>Initech LLC</td>
+                                <td>$10,450.75</td>
+                            </tr>
+                            <tr>
+                                <td>23</td>
+                                <td>Wayne Enterprises</td>
+                                <td>$9,890.25</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    
+                    <div style="margin-top:12px; padding-top:12px; border-top:1px solid #e0e0e0; color:#616061; font-size:13px;">
+                        <span class="emoji">✨</span> Confidence: 95% | 
+                        <span class="emoji">⚡</span> 2 tables referenced | 
+                        <span class="emoji">⏱️</span> 45ms
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 3: Database Provisioning -->
+        <div class="section">
+            <div class="section-title">3. Database Provisioning</div>
+            
+            <div class="message">
+                <div class="user">Alex Kim <span class="timestamp">4:30 PM</span></div>
+                <div class="command">/db provision feature-x-test</div>
+            </div>
+
+            <div class="message">
+                <div class="user">SlackDB <span class="timestamp">4:30 PM</span></div>
+                
+                <div style="background:#ecfdf5; border-left:4px solid #10b981; padding:16px; border-radius:8px;">
+                    <div style="font-weight:600; margin-bottom:8px; color:#047857;">
+                        <span class="emoji">✅</span> Database provisioned: feature-x-test
+                    </div>
+                    <div style="color:#065f46; font-size:14px;">
+                        <div style="margin-bottom:4px;">Connection ID: <code style="background:rgba(0,0,0,0.1); padding:2px 6px; border-radius:3px;">a1b2c3d4-e5f6-7890</code></div>
+                        <div>Status: <span class="status success">Active</span></div>
+                        <div style="margin-top:8px; font-size:13px;">Ready for use with <code style="background:rgba(0,0,0,0.1); padding:2px 6px; border-radius:3px;">/db query</code></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section 4: Query Optimization -->
+        <div class="section">
+            <div class="section-title">4. Query Optimization</div>
+            
+            <div class="message">
+                <div class="user">Sarah Chen <span class="timestamp">5:45 PM</span></div>
+                <div class="command">/db optimize SELECT * FROM orders WHERE created_at > '2024-01-01'</div>
+            </div>
+
+            <div class="message">
+                <div class="user">SlackDB <span class="timestamp">5:45 PM</span></div>
+                
+                <div style="border:1px solid #e0e0e0; border-radius:8px; overflow:hidden;">
+                    <div style="background:#f8f8f8; padding:16px; font-weight:600; border-bottom:1px solid #e0e0e0;">
+                        <span class="emoji">⚡</span> Query Optimization
+                    </div>
+                    
+                    <div style="padding:16px;">
+                        <div style="margin-bottom:16px;">
+                            <div class="field-label">Current Cost</div>
+                            <div class="field-value" style="font-size:24px; font-weight:600; color:#e01e5a;">1250 units</div>
+                        </div>
+                        
+                        <div style="margin-bottom:16px;">
+                            <div class="field-label">Recommendations</div>
+                            <ul style="margin-left:20px; color:#1d1c1d;">
+                                <li style="margin-bottom:8px;">Replace SELECT * with specific columns (~1.5-2x faster)</li>
+                                <li style="margin-bottom:8px;">Add index on created_at column</li>
+                            </ul>
+                        </div>
+                        
+                        <div>
+                            <div class="field-label">Suggested Index</div>
+                            <div class="code-block">CREATE INDEX CONCURRENTLY idx_orders_created_at ON orders(created_at);</div>
+                            <div style="color:#616061; font-size:13px; margin-top:4px;">
+                                Storage impact: ~50MB | Write overhead: ~5-10%
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-top:48px; padding-top:24px; border-top:2px solid #e0e0e0; text-align:center; color:#616061; font-size:14px;">
+            <p><strong>SlackDB:</strong> Database operations at the speed of conversation</p>
+            <p style="margin-top:8px;">AutoDB Hackathon 2026</p>
+        </div>
+    </div>
+</body>
+</html>
