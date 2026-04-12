@@ -9,25 +9,24 @@ load_dotenv()
 import os
 import json
 import asyncio
-from datetime import datetime
+from collections import defaultdict
+from datetime import datetime, timedelta
 from typing import Dict, List
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 import httpx
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-SLACK_BOT_TOKEN       = os.environ.get("SLACK_BOT_TOKEN")
-SLACK_SIGNING_SECRET  = os.environ.get("SLACK_SIGNING_SECRET")
-AUTODB_API_KEY        = os.environ.get("AUTODB_API_KEY")
-AUTODB_BASE_URL       = "http://api.autodb.app/api/v1"
+SLACK_BOT_TOKEN      = os.environ.get("SLACK_BOT_TOKEN")
+SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET")
+AUTODB_API_KEY       = os.environ.get("AUTODB_API_KEY")
+AUTODB_BASE_URL      = "https://api.autodb.app/api/v1"  # FIXED: https
 
-# Slack user ID of whoever must approve high-risk migrations.
-# Set APPROVER_SLACK_ID=U0123456789 in your .env
-# Find it: Slack → click your name → View full profile → Copy Member ID
 APPROVER_SLACK_ID   = os.environ.get("APPROVER_SLACK_ID", "")
-HIGH_RISK_THRESHOLD = 50   # risk score at which a second approval is required
+HIGH_RISK_THRESHOLD = 50
 
 # ── App init ───────────────────────────────────────────────────────────────────
 
@@ -35,9 +34,9 @@ slack_app = AsyncApp(token=SLACK_BOT_TOKEN, signing_secret=SLACK_SIGNING_SECRET)
 api       = FastAPI(title="SlackDB Bot")
 handler   = AsyncSlackRequestHandler(slack_app)
 
-connections: Dict[str, Dict] = {}   # user_id  → {default_connection}
-approvals:   Dict[str, Dict] = {}   # approval_token → approval record
-audit_log:   List[Dict]      = []   # global audit trail
+connections: Dict[str, Dict] = {}
+approvals:   Dict[str, Dict] = {}
+audit_log:   List[Dict]      = []
 
 # ── AutoDB client ──────────────────────────────────────────────────────────────
 
@@ -53,7 +52,9 @@ class AutoDBClient:
 
     async def _post(self, path, body):
         async with httpx.AsyncClient(timeout=30.0) as c:
-            return (await c.post(f"{self.base_url}{path}", headers=self._h, json=body)).json()
+            resp = await c.post(f"{self.base_url}{path}", headers=self._h, json=body)
+            print(f"[AutoDB] POST {path} → {resp.status_code}: {resp.text[:300]}")
+            return resp.json()
 
     async def list_connections(self):
         return await self._get("/connections")
@@ -80,14 +81,24 @@ class AutoDBClient:
 RISK_EMOJI = {"low": "🟢", "medium": "🟡", "high": "🟠", "critical": "🔴"}
 
 def format_risk_card(data: Dict, needs_second: bool = False) -> List[Dict]:
-    score      = data.get("risk_score", 0)
-    category   = data.get("risk_category", "unknown")
-    token      = data.get("approval_token", "none")
-    emoji      = RISK_EMOJI.get(category, "⚪")
-    sandbox    = (data.get("sandbox_result") or {}).get("passed", False)
+    score        = data.get("risk_score", 0)
+    category     = data.get("risk_category", "unknown")
+    token        = data.get("approval_token", "none")
+    emoji        = RISK_EMOJI.get(category, "⚪")
+    sandbox_raw  = data.get("sandbox_result")
+    sandbox_ran  = sandbox_raw is not None
+    sandbox_ok   = (sandbox_raw or {}).get("passed", False)
     irreversible = (data.get("rollback_plan") or {}).get("has_irreversible", False)
-    affected   = data.get("affected_tables", [])
-    sql        = data.get("sql", "")[:120]
+    affected     = data.get("affected_tables", [])
+    sql          = data.get("sql", "")[:120]
+
+    # Sandbox status message
+    if not sandbox_ran:
+        sandbox_text = "⚠️ Unavailable (DB not reachable by AutoDB)"
+    elif sandbox_ok:
+        sandbox_text = "✅ Passed"
+    else:
+        sandbox_text = "❌ Failed"
 
     warning = ""
     if needs_second:
@@ -98,8 +109,10 @@ def format_risk_card(data: Dict, needs_second: bool = False) -> List[Dict]:
     if score > 30:
         confirm_block = {"confirm": {
             "title":   {"type": "plain_text", "text": "Really run this?"},
-            "text":    {"type": "mrkdwn",     "text": f"*{category.upper()}* risk migration. "
-                                                       f"{'Cannot be rolled back.' if irreversible else 'Can be rolled back.'} Proceed?"},
+            "text":    {"type": "mrkdwn", "text": (
+                f"*{category.upper()}* risk migration. "
+                f"{'Cannot be rolled back.' if irreversible else 'Can be rolled back.'} Proceed?"
+            )},
             "confirm": {"type": "plain_text", "text": "Yes, run it"},
             "deny":    {"type": "plain_text", "text": "Cancel"},
         }}
@@ -110,7 +123,7 @@ def format_risk_card(data: Dict, needs_second: bool = False) -> List[Dict]:
         {"type": "section", "text": {"type": "mrkdwn", "text": (
             f"*SQL:*\n```{sql}```\n"
             f"*Affected tables:* {', '.join(t['table'] if isinstance(t, dict) else t for t in affected) if affected else 'none detected'}\n"
-            f"*Sandbox:* {'✅ Passed' if sandbox else '❌ Failed'}  "
+            f"*Sandbox:* {sandbox_text}  "
             f"*Rollback:* {'⚠️ Irreversible' if irreversible else '✅ Available'}"
             f"{warning}"
         )}},
@@ -161,7 +174,6 @@ def format_audit_log() -> str:
     return "\n\n".join(lines)
 
 # ── App Home Tab ───────────────────────────────────────────────────────────────
-# Shows a live personal dashboard to every user who opens the bot's Home tab.
 
 @slack_app.event("app_home_opened")
 async def handle_home_opened(event, client):
@@ -176,15 +188,11 @@ async def handle_home_opened(event, client):
     recent_blocks = []
     for entry in reversed(audit_log[-5:]):
         icon = {"approved": "✅", "rejected": "❌", "failed": "💥"}.get(entry["status"], "❓")
-        recent_blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn",
-                "text": (
-                    f"{icon} `{entry['sql'][:60]}...`\n"
-                    f"_{entry['status'].upper()} · risk {entry['score']}/100 · "
-                    f"by <@{entry['actor']}> · {entry['time']}_"
-                )}
-        })
+        recent_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": (
+            f"{icon} `{entry['sql'][:60]}...`\n"
+            f"_{entry['status'].upper()} · risk {entry['score']}/100 · "
+            f"by <@{entry['actor']}> · {entry['time']}_"
+        )}})
 
     if not recent_blocks:
         recent_blocks.append({"type": "section", "text": {"type": "mrkdwn",
@@ -193,13 +201,12 @@ async def handle_home_opened(event, client):
     pending_blocks = []
     for token, rec in approvals.items():
         if rec.get("status") == "pending":
-            risk = rec.get("data", {}).get("risk_category", "?")
+            risk  = rec.get("data", {}).get("risk_category", "?")
             score = rec.get("data", {}).get("risk_score", 0)
-            pending_blocks.append({"type": "section", "text": {"type": "mrkdwn",
-                "text": (
-                    f"⏳ `{rec['sql'][:60]}...`\n"
-                    f"_Risk: {risk} ({score}/100) · by <@{rec['user_id']}>_"
-                )}})
+            pending_blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": (
+                f"⏳ `{rec['sql'][:60]}...`\n"
+                f"_Risk: {risk} ({score}/100) · by <@{rec['user_id']}>_"
+            )}})
 
     await client.views_publish(
         user_id=user_id,
@@ -208,8 +215,7 @@ async def handle_home_opened(event, client):
             "blocks": [
                 {"type": "header", "text": {"type": "plain_text", "text": "🗄️  SlackDB — Your Database Co-Pilot"}},
                 {"type": "section", "text": {"type": "mrkdwn",
-                    "text": "Safe, collaborative database operations for your whole team. "
-                            "Powered by AutoDB risk analysis."}},
+                    "text": "Safe, collaborative database operations for your whole team. Powered by AutoDB risk analysis."}},
                 {"type": "divider"},
                 {"type": "section", "fields": [
                     {"type": "mrkdwn", "text": f"*Active DB*\n`{conn}`"},
@@ -220,25 +226,26 @@ async def handle_home_opened(event, client):
                     {"type": "mrkdwn", "text": f"*Approver*\n{'<@'+APPROVER_SLACK_ID+'>' if APPROVER_SLACK_ID else '⚠️ Not configured'}"},
                 ]},
                 {"type": "divider"},
-                *([ {"type": "section", "text": {"type": "mrkdwn", "text": "*⏳ Pending approvals*"}},
+                *([
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "*⏳ Pending approvals*"}},
                     *pending_blocks,
-                    {"type": "divider"} ] if pending_blocks else []),
+                    {"type": "divider"},
+                ] if pending_blocks else []),
                 {"type": "section", "text": {"type": "mrkdwn", "text": "*Recent migrations*"}},
                 *recent_blocks,
                 {"type": "divider"},
-                {"type": "section", "text": {"type": "mrkdwn",
-                    "text": (
-                        "💡 *Quick commands*\n"
-                        "`/db connect <id>` · connect a database\n"
-                        "`/db query <question>` · ask your DB in plain English\n"
-                        "`/db analyze <SQL>` · risk-check a migration\n"
-                        "`/db optimize <SQL>` · get performance suggestions\n"
-                        "`/db ask <question>` · AI database intelligence\n"
-                        "`/db panic` · emergency rollback\n"
-                        "`/db audit` · full migration history\n"
-                        "`/db status` · health check"
-                    )
-                }},
+                {"type": "section", "text": {"type": "mrkdwn", "text": (
+                    "💡 *Quick commands*\n"
+                    "`/db connect <id>` · connect a database\n"
+                    "`/db introspect` · refresh schema snapshot\n"
+                    "`/db query <question>` · ask your DB in plain English\n"
+                    "`/db analyze <SQL>` · risk-check a migration\n"
+                    "`/db optimize <SQL>` · get performance suggestions\n"
+                    "`/db ask <question>` · AI database intelligence\n"
+                    "`/db panic` · emergency rollback\n"
+                    "`/db audit` · full migration history\n"
+                    "`/db status` · health check"
+                )}},
             ]
         }
     )
@@ -258,6 +265,7 @@ async def handle_db_command(ack, command, client):
         await client.chat_postMessage(channel=chan, text=(
             "*SlackDB* — collaborative database ops for your whole team 🗄️\n\n"
             "• `/db connect <id>` — set your active database\n"
+            "• `/db introspect` — refresh schema snapshot\n"
             "• `/db connections` — list available databases\n"
             "• `/db query <question>` — ask your DB in plain English\n"
             "• `/db ask <question>` — AI database intelligence & diagnostics\n"
@@ -274,6 +282,7 @@ async def handle_db_command(ack, command, client):
     db   = AutoDBClient(AUTODB_API_KEY)
 
     if   sub == "connect":     await cmd_connect(client, chan, user_id, args)
+    elif sub == "introspect":  await cmd_introspect(client, chan, user_id)
     elif sub == "connections": await cmd_list_connections(client, chan, db)
     elif sub == "query":       await cmd_query(client, chan, user_id, args, db)
     elif sub == "ask":         await cmd_ask(client, chan, user_id, args, db)
@@ -299,8 +308,6 @@ async def cmd_connect(client, chan, user_id, conn_id):
 
     msg = await client.chat_postMessage(channel=chan,
         text=f"✅ *Connected to* `{conn_id}`\n🔄 Introspecting schema — this takes a few seconds...")
-
-    db = AutoDBClient(AUTODB_API_KEY)
     try:
         async with httpx.AsyncClient(timeout=60.0) as c:
             resp = await c.post(
@@ -330,12 +337,55 @@ async def cmd_connect(client, chan, user_id, conn_id):
                 {"type": "section", "text": {"type": "mrkdwn", "text": (
                     f"✅ *Connected to* `{conn_id}`\n"
                     f"⚠️ Schema introspection failed: `{err}`\n"
-                    f"Run `/db introspect` to retry before analyzing migrations."
+                    f"Run `/db introspect` to retry."
                 )}}
             ])
     except Exception as e:
         await client.chat_update(channel=chan, ts=msg["ts"],
             text=f"✅ Connected to `{conn_id}` but introspection errored: `{e}`\nRun `/db introspect` to retry.")
+
+
+async def cmd_introspect(client, chan, user_id):
+    conn = connections.get(user_id, {}).get("default_connection")
+    if not conn:
+        await client.chat_postMessage(channel=chan,
+            text="⚠️ No database connected. Use `/db connect <id>` first.")
+        return
+
+    msg = await client.chat_postMessage(channel=chan,
+        text=f"🔄 Introspecting schema for `{conn}`...")
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as c:
+            resp = await c.post(
+                f"{AUTODB_BASE_URL}/connections/{conn}/introspect",
+                headers={"Content-Type": "application/json", "X-API-Key": AUTODB_API_KEY}
+            )
+            r = resp.json()
+
+        if r.get("success"):
+            data        = r.get("data", {})
+            table_count = data.get("table_count", "?")
+            tables      = data.get("tables", [])
+            preview     = ", ".join(tables[:8])
+            if len(tables) > 8:
+                preview += f" +{len(tables)-8} more"
+            await client.chat_update(channel=chan, ts=msg["ts"],
+                text="Introspection complete", blocks=[
+                    {"type": "header", "text": {"type": "plain_text", "text": "🗂️  Schema Loaded"}},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": (
+                        f"*Database:* `{conn}`\n"
+                        f"*Tables found:* {table_count}\n"
+                        f"*Preview:* {preview}\n\n"
+                        f"AutoDB sandbox is ready — migrations will now validate correctly."
+                    )}}
+                ])
+        else:
+            err = r.get("error", r)
+            await client.chat_update(channel=chan, ts=msg["ts"],
+                text=f"❌ Introspection failed: `{err}`")
+    except Exception as e:
+        await client.chat_update(channel=chan, ts=msg["ts"],
+            text=f"❌ Introspection error: `{e}`")
 
 
 async def cmd_list_connections(client, chan, db):
@@ -372,11 +422,6 @@ async def cmd_query(client, chan, user_id, query, db):
 
 
 async def cmd_ask(client, chan, user_id, question, db):
-    """
-    AI database intelligence.
-    Usage: /db ask why is our checkout page slow?
-    Runs a diagnostic query AND surfaces an optimization tip.
-    """
     conn = connections.get(user_id, {}).get("default_connection")
     if not conn:
         await client.chat_postMessage(channel=chan,
@@ -384,7 +429,7 @@ async def cmd_ask(client, chan, user_id, question, db):
         return
     if not question.strip():
         await client.chat_postMessage(channel=chan,
-            text="Usage: `/db ask <question>`\nExample: `/db ask why is our checkout page slow?`")
+            text="Usage: `/db ask <question>`\nExample: `/db ask which customers have the most orders?`")
         return
 
     msg = await client.chat_postMessage(channel=chan, text="🤔 Thinking about your database...")
@@ -395,27 +440,22 @@ async def cmd_ask(client, chan, user_id, question, db):
         output       = data.get("markdown_output", "")
         conf         = int(data.get("confidence", 0) * 100)
 
-        # Piggyback an optimization check if there's generated SQL
         opt_tip = ""
         if sql:
             opt_result = await db.optimize_query(conn, sql)
             if opt_result.get("success"):
                 alts = opt_result.get("alternatives", [])
                 if alts:
-                    tip    = alts[0]
+                    tip     = alts[0]
                     opt_tip = (
                         f"\n\n💡 *Performance tip:* {tip.get('explanation', '')}"
                         f" _({tip.get('estimated_improvement', '')})_"
                     )
                 indexes = opt_result.get("index_recommendations", [])
                 if indexes:
-                    idx_sql = indexes[0].get("create_sql", "")
-                    opt_tip += f"\n🔍 *Recommended index:* `{idx_sql[:100]}`"
+                    opt_tip += f"\n🔍 *Recommended index:* `{indexes[0].get('create_sql', '')[:100]}`"
 
-        blocks = [
-            {"type": "header", "text": {"type": "plain_text",
-                "text": f"🧠  {question[:72]}"}},
-        ]
+        blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"🧠  {question[:72]}"}}]
         if sql:
             blocks.append({"type": "section", "text": {"type": "mrkdwn",
                 "text": f"*Query used:*\n```{sql[:600]}```"}})
@@ -424,7 +464,7 @@ async def cmd_ask(client, chan, user_id, question, db):
                 "text": f"*Results:*\n```{output[:1800]}```{opt_tip}"}})
         elif not sql:
             blocks.append({"type": "section", "text": {"type": "mrkdwn",
-                "text": "_No SQL could be generated for that question. Try rephrasing it._"}})
+                "text": "_No SQL could be generated. Try rephrasing your question._"}})
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
             "text": f"Confidence: {conf}% · AutoDB text-to-SQL"}]})
 
@@ -466,7 +506,6 @@ async def cmd_analyze(client, chan, user_id, sql, db):
         await client.chat_update(channel=chan, ts=msg["ts"], text="Migration analysis",
             blocks=format_risk_card(data, needs_second))
 
-        # Ping approver for high-risk migrations
         if needs_second and APPROVER_SLACK_ID and APPROVER_SLACK_ID != user_id:
             await client.chat_postMessage(channel=chan, text=(
                 f"🚨 <@{APPROVER_SLACK_ID}> — your approval is needed for a "
@@ -497,8 +536,7 @@ async def cmd_optimize(client, chan, user_id, sql, db):
             if alts:
                 blocks.append({"type": "section", "text": {"type": "mrkdwn",
                     "text": "*Suggested rewrites:*\n" + "\n".join(
-                        f"• {a['explanation']} _({a['estimated_improvement']})_"
-                        for a in alts[:3]
+                        f"• {a['explanation']} _({a['estimated_improvement']})_" for a in alts[:3]
                     )}})
             if indexes:
                 blocks.append({"type": "section", "text": {"type": "mrkdwn",
@@ -516,12 +554,6 @@ async def cmd_optimize(client, chan, user_id, sql, db):
 
 
 async def cmd_panic(client, chan, user_id, arg, db):
-    """
-    Emergency rollback.
-    Usage:
-      /db panic          → auto-finds the most recent reversible approved migration
-      /db panic <token>  → targets a specific approval token
-    """
     target = None
 
     if arg.strip():
@@ -531,35 +563,29 @@ async def cmd_panic(client, chan, user_id, arg, db):
                 text=f"❌ No approval record found for token `{arg.strip()}`.")
             return
     else:
-        # Walk backwards through approvals to find the last reversible one
         for rec in reversed(list(approvals.values())):
             if rec.get("status") == "approved":
-                rollback = rec.get("data", {}).get("rollback_plan", {})
-                if not rollback.get("has_irreversible"):
+                if not (rec.get("data", {}).get("rollback_plan") or {}).get("has_irreversible"):
                     target = rec
                     break
 
     if not target:
         await client.chat_postMessage(channel=chan, blocks=[
             {"type": "header", "text": {"type": "plain_text", "text": "🚨  PANIC — No target found"}},
-            {"type": "section", "text": {"type": "mrkdwn",
-                "text": (
-                    "No reversible migration found to roll back.\n"
-                    "Use `/db audit` to find a specific approval token, "
-                    "then run `/db panic <token>`."
-                )}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": (
+                "No reversible migration found to roll back.\n"
+                "Use `/db audit` to find a specific approval token, "
+                "then run `/db panic <token>`."
+            )}},
         ])
         return
 
-    rollback_sql  = target["data"].get("rollback_plan", {}).get("combined_script", "")
-    category      = target["data"].get("risk_category", "unknown")
-    score         = target["data"].get("risk_score", 0)
-    original_sql  = target.get("sql", "")
+    rollback_sql = (target["data"].get("rollback_plan") or {}).get("combined_script", "")
+    category     = target["data"].get("risk_category", "unknown")
+    score        = target["data"].get("risk_score", 0)
+    original_sql = target.get("sql", "")
 
-    payload = json.dumps({
-        "sql":  rollback_sql,
-        "conn": target["connection_id"],
-    })
+    payload = json.dumps({"sql": rollback_sql, "conn": target["connection_id"]})
 
     await client.chat_postMessage(channel=chan, blocks=[
         {"type": "header", "text": {"type": "plain_text", "text": "🚨  PANIC — Emergency Rollback"}},
@@ -578,7 +604,7 @@ async def cmd_panic(client, chan, user_id, arg, db):
                 "action_id": "execute_panic_rollback",
                 "confirm": {
                     "title":   {"type": "plain_text", "text": "This will roll back production"},
-                    "text":    {"type": "mrkdwn",     "text": "This executes immediately and cannot be undone. Proceed?"},
+                    "text":    {"type": "mrkdwn", "text": "This executes immediately and cannot be undone. Proceed?"},
                     "confirm": {"type": "plain_text", "text": "Yes, roll it back"},
                     "deny":    {"type": "plain_text", "text": "Cancel"},
                 },
@@ -607,7 +633,7 @@ async def cmd_status(client, chan, user_id):
             {"type": "mrkdwn", "text": f"*Your active DB:*\n`{conn}`"},
             {"type": "mrkdwn", "text": f"*Pending approvals:*\n{pending}"},
             {"type": "mrkdwn", "text": f"*Migrations run:*\n{len(audit_log)}"},
-            {"type": "mrkdwn", "text": f"*Approver:*\n{'<@'+APPROVER_SLACK_ID+'>' if APPROVER_SLACK_ID else '⚠️ Not set (add APPROVER_SLACK_ID to .env)'}"},
+            {"type": "mrkdwn", "text": f"*Approver:*\n{'<@'+APPROVER_SLACK_ID+'>' if APPROVER_SLACK_ID else '⚠️ Not set'}"},
             {"type": "mrkdwn", "text": f"*AutoDB key:*\n{'✅ Set' if AUTODB_API_KEY else '❌ Missing'}"},
             {"type": "mrkdwn", "text": "*Health:*\n✅ Operational"},
         ]},
@@ -632,7 +658,6 @@ async def handle_approve(ack, body, client):
             text=f"ℹ️ This migration was already *{approval['status']}*.")
         return
 
-    # Enforce designated approver for high-risk
     if approval["needs_second"] and APPROVER_SLACK_ID:
         if actor_id not in (APPROVER_SLACK_ID, approval["user_id"]):
             await client.chat_postMessage(channel=body["channel"]["id"],
@@ -643,9 +668,16 @@ async def handle_approve(ack, body, client):
     approval["status"] = "approved"
     approval["approved_by"].append(actor_id)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    db  = AutoDBClient(AUTODB_API_KEY)
 
-    db     = AutoDBClient(AUTODB_API_KEY)
-    result = await db.execute_migration(approval["connection_id"], approval["sql"], token)
+    # Re-analyze to get a fresh token in case the original expired
+    try:
+        fresh = await db.analyze_migration(approval["connection_id"], approval["sql"])
+        live_token = fresh["data"].get("approval_token", token) if fresh.get("success") else token
+    except Exception:
+        live_token = token
+
+    result = await db.execute_migration(approval["connection_id"], approval["sql"], live_token)
 
     if result.get("success"):
         req_id = result.get("data", {}).get("request_id", "unknown")
@@ -664,21 +696,22 @@ async def handle_approve(ack, body, client):
         )
         audit_log.append({
             "sql": approval["sql"], "actor": actor_id, "requester": approval["user_id"],
-            "risk": approval["data"].get("risk_category","?"),
+            "risk": approval["data"].get("risk_category", "?"),
             "score": approval["data"].get("risk_score", 0),
             "status": "approved", "request_id": req_id, "time": now,
         })
-        asyncio.create_task(_poll_status(client, approval["channel_id"],
-            body["message"]["ts"], req_id, db))
+        asyncio.create_task(_poll_status(
+            client, approval["channel_id"], body["message"]["ts"], req_id, db))
     else:
         approval["status"] = "failed"
-        err = result.get("error", result)
-        await client.chat_postMessage(channel=approval["channel_id"],
-            thread_ts=body["message"]["ts"],
-            text=f"❌ *Execution failed:*\n```{err}```")
+        err = result.get("error") or result.get("message") or result.get("detail") or json.dumps(result)
+        await client.chat_postMessage(
+            channel=approval["channel_id"], thread_ts=body["message"]["ts"],
+            text=f"❌ *Execution failed:*\n```{str(err)[:600]}```"
+        )
         audit_log.append({
             "sql": approval["sql"], "actor": actor_id, "requester": approval["user_id"],
-            "risk": approval["data"].get("risk_category","?"),
+            "risk": approval["data"].get("risk_category", "?"),
             "score": approval["data"].get("risk_score", 0),
             "status": "failed", "time": now,
         })
@@ -696,7 +729,7 @@ async def handle_reject(ack, body, client):
         approval["status"] = "rejected"
         audit_log.append({
             "sql": approval["sql"], "actor": actor_id, "requester": approval["user_id"],
-            "risk": approval["data"].get("risk_category","?"),
+            "risk": approval["data"].get("risk_category", "?"),
             "score": approval["data"].get("risk_score", 0),
             "status": "rejected", "time": now,
         })
@@ -725,12 +758,12 @@ async def handle_view_details(ack, body, client):
 
     d = approval["data"]
     details = json.dumps({
-        "risk_score":     d.get("risk_score"),
-        "risk_category":  d.get("risk_category"),
+        "risk_score":      d.get("risk_score"),
+        "risk_category":   d.get("risk_category"),
         "affected_tables": d.get("affected_tables"),
-        "sandbox_result": d.get("sandbox_result"),
-        "rollback_plan":  d.get("rollback_plan"),
-        "warnings":       d.get("warnings", []),
+        "sandbox_result":  d.get("sandbox_result"),
+        "rollback_plan":   d.get("rollback_plan"),
+        "warnings":        d.get("warnings", []),
     }, indent=2)
 
     await client.chat_postMessage(channel=body["channel"]["id"],
@@ -741,16 +774,14 @@ async def handle_view_details(ack, body, client):
 @slack_app.action("execute_panic_rollback")
 async def handle_panic_rollback(ack, body, client):
     await ack()
-    payload  = json.loads(body["actions"][0]["value"])
-    actor_id = body["user"]["id"]
-    now      = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
+    payload      = json.loads(body["actions"][0]["value"])
+    actor_id     = body["user"]["id"]
+    now          = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     rollback_sql = payload.get("sql", "")
     conn_id      = payload.get("conn", "")
 
     db = AutoDBClient(AUTODB_API_KEY)
     try:
-        # Re-analyze the rollback SQL to get a fresh approval token
         analysis = await db.analyze_migration(conn_id, rollback_sql)
         if analysis.get("success"):
             token  = analysis["data"].get("approval_token")
@@ -762,8 +793,7 @@ async def handle_panic_rollback(ack, body, client):
                     text="Rollback executed",
                     blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": (
                         f"🔴 *Emergency rollback executed* by <@{actor_id}> at {now}\n"
-                        f"Execution ID: `{req_id}`\n"
-                        f"```{rollback_sql[:300]}```"
+                        f"Execution ID: `{req_id}`\n```{rollback_sql[:300]}```"
                     )}}],
                 )
                 audit_log.append({
@@ -777,10 +807,10 @@ async def handle_panic_rollback(ack, body, client):
 
         await client.chat_postMessage(channel=body["channel"]["id"],
             thread_ts=body["message"]["ts"],
-            text=f"❌ Rollback execution failed: {analysis.get('error', 'unknown error')}")
+            text=f"❌ Rollback failed: {analysis.get('error', 'unknown error')}")
     except Exception as e:
         await client.chat_postMessage(channel=body["channel"]["id"],
-            thread_ts=body["message"]["ts"], text=f"❌ Rollback failed: {e}")
+            thread_ts=body["message"]["ts"], text=f"❌ Rollback error: {e}")
 
 
 @slack_app.action("cancel_panic")
@@ -814,12 +844,10 @@ async def _poll_status(client, chan, thread_ts, request_id, db: AutoDBClient):
 
 # ── FastAPI routes ─────────────────────────────────────────────────────────────
 
-from fastapi.middleware.cors import CORSMiddleware
-
 api.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -839,31 +867,22 @@ async def health():
 
 @api.get("/audit")
 async def get_audit():
-    from collections import defaultdict
-    from datetime import datetime, timedelta
-
     total      = len(audit_log)
     approved_n = sum(1 for l in audit_log if l.get("status") == "approved")
     rejected_n = sum(1 for l in audit_log if l.get("status") == "rejected")
     avg_risk   = round(sum(l.get("score", 0) for l in audit_log) / total) if total else 0
 
-    # Risk distribution
     risk_dist = {"low": 0, "medium": 0, "high": 0, "critical": 0}
     for l in audit_log:
         cat = l.get("risk", "low")
         if cat in risk_dist:
             risk_dist[cat] += 1
 
-    # Team leaderboard
     team = defaultdict(int)
     for l in audit_log:
         team[l.get("actor", "unknown")] += 1
-    team_stats = [
-        {"user_id": k, "runs": v}
-        for k, v in sorted(team.items(), key=lambda x: -x[1])
-    ]
+    team_stats = [{"user_id": k, "runs": v} for k, v in sorted(team.items(), key=lambda x: -x[1])]
 
-    # Last 7 days of activity
     today = datetime.now().date()
     daily = {}
     for i in range(6, -1, -1):
@@ -881,7 +900,6 @@ async def get_audit():
             pass
     daily_activity = [{"date": k, **v} for k, v in daily.items()]
 
-    # Pending approval details
     pending_items = []
     for token, rec in approvals.items():
         if rec.get("status") == "pending":
