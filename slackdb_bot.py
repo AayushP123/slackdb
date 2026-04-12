@@ -84,8 +84,8 @@ def format_risk_card(data: Dict, needs_second: bool = False) -> List[Dict]:
     category   = data.get("risk_category", "unknown")
     token      = data.get("approval_token", "none")
     emoji      = RISK_EMOJI.get(category, "⚪")
-    sandbox    = data.get("sandbox_result", {}).get("passed", False)
-    irreversible = data.get("rollback_plan", {}).get("has_irreversible", False)
+    sandbox    = (data.get("sandbox_result") or {}).get("passed", False)
+    irreversible = (data.get("rollback_plan") or {}).get("has_irreversible", False)
     affected   = data.get("affected_tables", [])
     sql        = data.get("sql", "")[:120]
 
