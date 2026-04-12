@@ -839,14 +839,72 @@ async def health():
 
 @api.get("/audit")
 async def get_audit():
-    total = len(audit_log)
+    from collections import defaultdict
+    from datetime import datetime, timedelta
+
+    total      = len(audit_log)
+    approved_n = sum(1 for l in audit_log if l.get("status") == "approved")
+    rejected_n = sum(1 for l in audit_log if l.get("status") == "rejected")
+    avg_risk   = round(sum(l.get("score", 0) for l in audit_log) / total) if total else 0
+
+    # Risk distribution
+    risk_dist = {"low": 0, "medium": 0, "high": 0, "critical": 0}
+    for l in audit_log:
+        cat = l.get("risk", "low")
+        if cat in risk_dist:
+            risk_dist[cat] += 1
+
+    # Team leaderboard
+    team = defaultdict(int)
+    for l in audit_log:
+        team[l.get("actor", "unknown")] += 1
+    team_stats = [
+        {"user_id": k, "runs": v}
+        for k, v in sorted(team.items(), key=lambda x: -x[1])
+    ]
+
+    # Last 7 days of activity
+    today = datetime.now().date()
+    daily = {}
+    for i in range(6, -1, -1):
+        d = (today - timedelta(days=i)).isoformat()
+        daily[d] = {"approved": 0, "rejected": 0}
+    for l in audit_log:
+        try:
+            d = l.get("time", "")[:10]
+            if d in daily:
+                if l.get("status") == "approved":
+                    daily[d]["approved"] += 1
+                elif l.get("status") == "rejected":
+                    daily[d]["rejected"] += 1
+        except Exception:
+            pass
+    daily_activity = [{"date": k, **v} for k, v in daily.items()]
+
+    # Pending approval details
+    pending_items = []
+    for token, rec in approvals.items():
+        if rec.get("status") == "pending":
+            data = rec.get("data", {})
+            pending_items.append({
+                "token":   token,
+                "sql":     rec.get("sql", ""),
+                "risk":    data.get("risk_category", "unknown"),
+                "score":   data.get("risk_score", 0),
+                "user_id": rec.get("user_id", ""),
+            })
+
     return {
-        "logs":              audit_log,
-        "pending_approvals": sum(1 for a in approvals.values() if a.get("status") == "pending"),
         "total":             total,
-        "approved":          sum(1 for l in audit_log if l.get("status") == "approved"),
-        "rejected":          sum(1 for l in audit_log if l.get("status") == "rejected"),
-        "avg_risk":          round(sum(l.get("score", 0) for l in audit_log) / total) if total else 0,
+        "approved":          approved_n,
+        "rejected":          rejected_n,
+        "pending_approvals": len(pending_items),
+        "avg_risk":          avg_risk,
+        "risk_distribution": risk_dist,
+        "team_stats":        team_stats,
+        "daily_activity":    daily_activity,
+        "pending_items":     pending_items,
+        "recent_logs":       list(reversed(audit_log[-10:])),
     }
 
 if __name__ == "__main__":
